@@ -7,7 +7,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],  # your frontend
+    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,16 +24,18 @@ class ConversationRequest(BaseModel):
 # Endpoints
 @app.get("/")
 async def root():
-    return {"message": "Backend running with conversation endpoint!"}
+    return {"message": "Backend is working."}
 
 @app.post("/conversation")
-async def conversation_api(req: ConversationRequest):
-    last_msg = req.messages[-1].content if req.messages else "Nothing received."
+async def conversation_api(request: ConversationRequest):
+    last_message = request.messages[-1].content if request.messages else "No message"
     return {
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": f"You said: {last_msg}"
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": f"You said: {last_message}"
+                }
             }
-        }]
+        ]
     }
