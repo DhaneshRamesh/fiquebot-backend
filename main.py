@@ -3,17 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
+# Create app
 app = FastAPI()
 
+# Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"], # your frontend link
+    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],  # YOUR Frontend link here!
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Models
+# Define Models
 class Message(BaseModel):
     role: str
     content: str
@@ -21,25 +23,35 @@ class Message(BaseModel):
 class ConversationRequest(BaseModel):
     messages: List[Message]
 
-# Root Route
+# Health check route
 @app.get("/")
 async def root():
-    return {"message": "Backend working fine!"}
+    return {"message": "Backend online!"}
 
-# Real /conversation Route
+# Chatbot main endpoint
 @app.post("/conversation")
 async def conversation_api(request: ConversationRequest):
-    if request.messages:
-        last_user_message = request.messages[-1].content
-    else:
-        last_user_message = "Nothing provided."
+    if not request.messages:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "👋 Hello! You haven't said anything yet."
+                    }
+                }
+            ]
+        }
+
+    last_message = request.messages[-1].content
+    response_content = f"👋 You said: '{last_message}'"
 
     return {
         "choices": [
             {
                 "message": {
                     "role": "assistant",
-                    "content": f"👋 You said: '{last_user_message}'"
+                    "content": response_content
                 }
             }
         ]
