@@ -1,7 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 # Create app
 app = FastAPI()
@@ -9,7 +9,10 @@ app = FastAPI()
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],  # Your Azure Static Web App URL
+    allow_origins=[
+        "https://kind-island-057bb3903.6.azurestaticapps.net",  # Frontend
+        "https://fiquebot-backend.onrender.com"                 # Backend itself
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,7 +24,7 @@ class Message(BaseModel):
     content: str
 
 class ConversationRequest(BaseModel):
-    messages: List[Message]
+    messages: Optional[List[Message]] = []
 
 # Dummy database to simulate history
 mock_db = {
@@ -35,32 +38,49 @@ async def root():
 
 # Chatbot main conversation endpoint
 @app.post("/conversation")
-async def conversation_api(request: ConversationRequest):
-    if not request.messages:
+async def conversation_api(request: Request):
+    try:
+        payload = await request.json()
+        messages = payload.get("messages", [])
+        
+        if not messages:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "👋 Hello! You haven't said anything yet."
+                        }
+                    }
+                ]
+            }
+        
+        last_message = messages[-1]["content"]
+        response_content = f"👋 You said: '{last_message}'"
+
         return {
             "choices": [
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "👋 Hello! You haven't said anything yet."
+                        "content": response_content
                     }
                 }
             ]
         }
 
-    last_message = request.messages[-1].content
-    response_content = f"👋 You said: '{last_message}'"
-
-    return {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": response_content
+    except Exception as e:
+        print(f"Error: {e}")
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "⚠️ Sorry, there was an error processing your message."
+                    }
                 }
-            }
-        ]
-    }
+            ]
+        }
 
 # List conversation history
 @app.get("/history/list")
