@@ -67,11 +67,25 @@ async def conversation_api(request: Request):
                 ]
             }
 
-        # Convert raw dict to Message models
-        messages = [Message(**msg) for msg in messages_data]
+        # Safely parse messages
+        valid_messages = []
+        for msg in messages_data:
+            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
+                valid_messages.append(Message(role=msg["role"], content=msg["content"]))
 
-        # Correctly clean messages
-        cleaned_messages = [{"role": m.role, "content": m.content} for m in messages]
+        if not valid_messages:
+            return {
+                "choices": [
+                    {
+                        "messages": [
+                            {"role": "assistant", "content": "👋 Hello! Please send a valid message."}
+                        ]
+                    }
+                ]
+            }
+
+        # Clean messages
+        cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
 
         headers = {
             "Content-Type": "application/json",
