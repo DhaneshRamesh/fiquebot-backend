@@ -10,8 +10,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://kind-island-057bb3903.6.azurestaticapps.net",  # Frontend
-        "https://fiquebot-backend.onrender.com"                 # Backend itself
+        "https://kind-island-057bb3903.6.azurestaticapps.net",  # Frontend URL
+        "https://fiquebot-backend.onrender.com"                 # Backend URL (Render)
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -36,14 +36,18 @@ mock_db = {
 async def root():
     return {"message": "Backend online!"}
 
-# Chatbot main conversation endpoint
+# Conversation endpoint with logging
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
         payload = await request.json()
+        print("🚀 Received payload:", payload)
+
         messages = payload.get("messages", [])
-        
+        print("📝 Extracted messages:", messages)
+
         if not messages:
+            print("⚠️ No messages found!")
             return {
                 "choices": [
                     {
@@ -54,8 +58,10 @@ async def conversation_api(request: Request):
                     }
                 ]
             }
-        
+
         last_message = messages[-1]["content"]
+        print("💬 Last user message:", last_message)
+
         response_content = f"👋 You said: '{last_message}'"
 
         return {
@@ -70,7 +76,7 @@ async def conversation_api(request: Request):
         }
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error happened while processing conversation: {e}")
         return {
             "choices": [
                 {
