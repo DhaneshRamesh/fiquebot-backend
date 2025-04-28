@@ -9,14 +9,24 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Environment Variables
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
+AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
+
+# Check required environment variables
+if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY or not AZURE_OPENAI_MODEL:
+    raise ValueError("❌ Missing AZURE_OPENAI_* environment variables. Check your .env file!")
+
 # Create FastAPI app
 app = FastAPI()
 
-# Setup CORS (VERY IMPORTANT)
+# Setup CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://kind-island-057bb3903.6.azurestaticapps.net",  # Your frontend URL
+        "https://kind-island-057bb3903.6.azurestaticapps.net",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -32,22 +42,14 @@ class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
 
 # Dummy database for conversation history
-mock_db = {
-    "history": []
-}
-
-# Environment Variables
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
-AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
-AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
+mock_db = {"history": []}
 
 # Health check route
 @app.get("/")
 async def root():
     return {"message": "Backend online!"}
 
-# 🚀 Conversation endpoint (REAL Azure OpenAI call)
+# Conversation endpoint (REAL Azure OpenAI call)
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
@@ -59,10 +61,7 @@ async def conversation_api(request: Request):
                 "choices": [
                     {
                         "messages": [
-                            {
-                                "role": "assistant",
-                                "content": "👋 Hello! You haven't said anything yet."
-                            }
+                            {"role": "assistant", "content": "👋 Hello! You haven't said anything yet."}
                         ]
                     }
                 ]
@@ -89,7 +88,7 @@ async def conversation_api(request: Request):
                 headers=headers,
                 json=body
             )
-        
+
         response.raise_for_status()
         result = response.json()
 
@@ -105,20 +104,19 @@ async def conversation_api(request: Request):
 
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
+        if hasattr(e, 'response'):
+            print(f"❌ OpenAI API response: {e.response.text}")
         return {
             "choices": [
                 {
                     "messages": [
-                        {
-                            "role": "assistant",
-                            "content": "⚠️ Sorry, there was an error processing your message."
-                        }
+                        {"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}
                     ]
                 }
             ]
         }
 
-# Dummy history endpoints (for frontend compatibility)
+# History endpoints
 @app.get("/history/ensure")
 async def history_ensure():
     return {"message": "DB working (mocked)"}
