@@ -67,13 +67,16 @@ async def conversation_api(request: Request):
                 ]
             }
 
+        # Clean messages: keep only 'role' and 'content'
+        cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
         headers = {
             "Content-Type": "application/json",
             "api-key": AZURE_OPENAI_KEY
         }
 
         body = {
-            "messages": messages,
+            "messages": cleaned_messages,
             "temperature": 0.7,
             "top_p": 0.95,
             "frequency_penalty": 0,
