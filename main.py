@@ -54,9 +54,9 @@ async def root():
 async def conversation_api(request: Request):
     try:
         payload = await request.json()
-        messages = payload.get("messages", [])
+        messages_data = payload.get("messages", [])
 
-        if not messages:
+        if not messages_data:
             return {
                 "choices": [
                     {
@@ -67,8 +67,11 @@ async def conversation_api(request: Request):
                 ]
             }
 
-        # Clean messages: keep only 'role' and 'content'
-        cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+        # Convert raw dict to Message models
+        messages = [Message(**msg) for msg in messages_data]
+
+        # Correctly clean messages
+        cleaned_messages = [{"role": m.role, "content": m.content} for m in messages]
 
         headers = {
             "Content-Type": "application/json",
