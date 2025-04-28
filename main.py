@@ -36,7 +36,7 @@ mock_db = {
 async def root():
     return {"message": "Backend online!"}
 
-# 🚀 Conversation endpoint with RAW body logging
+# 🚀 Conversation endpoint with correct structure
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
@@ -54,10 +54,12 @@ async def conversation_api(request: Request):
             return {
                 "choices": [
                     {
-                        "message": {
-                            "role": "assistant",
-                            "content": "👋 Hello! You haven't said anything yet."
-                        }
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "👋 Hello! You haven't said anything yet."
+                            }
+                        ]
                     }
                 ]
             }
@@ -70,10 +72,12 @@ async def conversation_api(request: Request):
         return {
             "choices": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": response_content
-                    }
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": response_content
+                        }
+                    ]
                 }
             ]
         }
@@ -83,10 +87,12 @@ async def conversation_api(request: Request):
         return {
             "choices": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": "⚠️ Sorry, there was an error processing your message."
-                    }
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "⚠️ Sorry, there was an error processing your message."
+                        }
+                    ]
                 }
             ]
         }
