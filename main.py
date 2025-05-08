@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 from azure_search import search_articles  # ✅ NEW: Import search retriever
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path=".env.production")  # 👈 force load the correct file
+
 
 # OpenAI Environment Variables
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
