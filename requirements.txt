@@ -3,3 +3,4 @@ uvicorn
 gunicorn
 httpx
 python-dotenv
+requests
