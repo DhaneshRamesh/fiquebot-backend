@@ -1,3 +1,5 @@
+# Full corrected main.py for FastAPI chatbot with Azure Cognitive Search RAG
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,22 +9,23 @@ import httpx
 from dotenv import load_dotenv
 from azure_search import search_articles  # ✅ NEW: Import search retriever
 
-# Load environment variables
-load_dotenv(dotenv_path=".env.production")  # 👈 force load the correct file
+# Load environment variables from .env.production
+load_dotenv(dotenv_path=".env.production")
 
-
-# OpenAI Environment Variables
+# Azure OpenAI environment variables
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
 
+# Validate essential config
 if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY or not AZURE_OPENAI_MODEL:
-    raise ValueError("❌ Missing AZURE_OPENAI_* environment variables. Check your .env file!")
+    raise ValueError("❌ Missing Azure OpenAI environment variables!")
 
+# Initialize FastAPI app
 app = FastAPI()
 
-# Setup CORS
+# CORS config
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],
@@ -31,7 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Models
+# Request/response models
 class Message(BaseModel):
     role: str
     content: str
@@ -39,13 +42,15 @@ class Message(BaseModel):
 class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
 
-# Mocked DB
+# Mocked DB for chat history
 mock_db = {"history": []}
 
+# Health check
 @app.get("/")
 async def root():
     return {"message": "Backend online!"}
 
+# Chat completion with optional RAG context
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
@@ -62,16 +67,14 @@ async def conversation_api(request: Request):
         ]
 
         if not valid_messages:
-            return {"choices": [{"messages": [{"role": "assistant", "content": "👋 Hello! Please send a valid message."}]}]}
+            return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}]}
 
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
 
-        # ✅ Add Azure Cognitive Search Context (RAG)
-        last_user_message = valid_messages[-1].content
-        search_contexts = search_articles(last_user_message)
+        # ✅ Inject RAG context from Azure Cognitive Search
+        user_question = valid_messages[-1].content
+        search_contexts = search_articles(user_question)
         context_block = "\n\n---\n\n".join(search_contexts)
-
-        # Replace last message with RAG-injected context
         cleaned_messages[-1] = {
             "role": "user",
             "content": f"""Use the following context to answer the question.
@@ -80,14 +83,14 @@ Context:
 {context_block}
 
 Question:
-{last_user_message}"""
+{user_question}"""
         }
 
+        # Build request body
         headers = {
             "Content-Type": "application/json",
             "api-key": AZURE_OPENAI_KEY
         }
-
         body = {
             "messages": cleaned_messages,
             "temperature": 0.7,
@@ -98,6 +101,7 @@ Question:
             "stream": False,
         }
 
+        # Send request to Azure OpenAI
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
@@ -115,7 +119,7 @@ Question:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
 
-# History endpoints (unchanged)
+# History routes
 @app.get("/history/ensure")
 async def history_ensure():
     return {"message": "DB working (mocked)"}
