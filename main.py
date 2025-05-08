@@ -5,29 +5,26 @@ from typing import List, Optional
 import os
 import httpx
 from dotenv import load_dotenv
+from azure_search import search_articles  # ✅ NEW: Import search retriever
 
 # Load environment variables
 load_dotenv()
 
-# Environment Variables
+# OpenAI Environment Variables
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
 
-# Check required environment variables
 if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY or not AZURE_OPENAI_MODEL:
     raise ValueError("❌ Missing AZURE_OPENAI_* environment variables. Check your .env file!")
 
-# Create FastAPI app
 app = FastAPI()
 
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://kind-island-057bb3903.6.azurestaticapps.net",
-    ],
+    allow_origins=["https://kind-island-057bb3903.6.azurestaticapps.net"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,15 +38,13 @@ class Message(BaseModel):
 class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
 
-# Dummy database for conversation history
+# Mocked DB
 mock_db = {"history": []}
 
-# Health check route
 @app.get("/")
 async def root():
     return {"message": "Backend online!"}
 
-# Conversation endpoint (REAL Azure OpenAI call)
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
@@ -57,35 +52,35 @@ async def conversation_api(request: Request):
         messages_data = payload.get("messages", [])
 
         if not messages_data:
-            return {
-                "choices": [
-                    {
-                        "messages": [
-                            {"role": "assistant", "content": "👋 Hello! You haven't said anything yet."}
-                        ]
-                    }
-                ]
-            }
+            return {"choices": [{"messages": [{"role": "assistant", "content": "👋 Hello! You haven't said anything yet."}]}]}
 
-        # Safely parse messages
-        valid_messages = []
-        for msg in messages_data:
-            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                valid_messages.append(Message(role=msg["role"], content=msg["content"]))
+        valid_messages = [
+            Message(role=msg["role"], content=msg["content"])
+            for msg in messages_data
+            if isinstance(msg, dict) and msg.get("role") and msg.get("content")
+        ]
 
         if not valid_messages:
-            return {
-                "choices": [
-                    {
-                        "messages": [
-                            {"role": "assistant", "content": "👋 Hello! Please send a valid message."}
-                        ]
-                    }
-                ]
-            }
+            return {"choices": [{"messages": [{"role": "assistant", "content": "👋 Hello! Please send a valid message."}]}]}
 
-        # Clean messages
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
+
+        # ✅ Add Azure Cognitive Search Context (RAG)
+        last_user_message = valid_messages[-1].content
+        search_contexts = search_articles(last_user_message)
+        context_block = "\n\n---\n\n".join(search_contexts)
+
+        # Replace last message with RAG-injected context
+        cleaned_messages[-1] = {
+            "role": "user",
+            "content": f"""Use the following context to answer the question.
+
+Context:
+{context_block}
+
+Question:
+{last_user_message}"""
+        }
 
         headers = {
             "Content-Type": "application/json",
@@ -111,32 +106,15 @@ async def conversation_api(request: Request):
 
         response.raise_for_status()
         result = response.json()
-
         assistant_message = result["choices"][0]["message"]
 
-        return {
-            "choices": [
-                {
-                    "messages": [assistant_message]
-                }
-            ]
-        }
+        return {"choices": [{"messages": [assistant_message]}]}
 
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
-        if hasattr(e, 'response'):
-            print(f"❌ OpenAI API response: {e.response.text}")
-        return {
-            "choices": [
-                {
-                    "messages": [
-                        {"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}
-                    ]
-                }
-            ]
-        }
+        return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
 
-# History endpoints
+# History endpoints (unchanged)
 @app.get("/history/ensure")
 async def history_ensure():
     return {"message": "DB working (mocked)"}
