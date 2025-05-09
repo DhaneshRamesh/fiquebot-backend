@@ -64,7 +64,9 @@ async def conversation_api(request: Request):
         user_question = valid_messages[-1].content
 
         fallback_flag = any(
-            any(trigger in m.content.lower() for trigger in ["try general", "fallback", "go ahead", "search online", "use gpt"])
+            any(trigger in m.content.lower() for trigger in ["yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
+    "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
+    "that’s fine", "proceed", "give me an answer", "show me anyway"])
             for m in valid_messages[-2:]
         )
 
