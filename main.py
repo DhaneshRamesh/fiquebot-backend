@@ -4,13 +4,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 import os
 import httpx
+import re
 from dotenv import load_dotenv
-from azure_search import search_articles  # ✅ Import search retriever
+from azure_search import search_articles
 
-# Load environment variables from .env.production
 load_dotenv(dotenv_path=".env.production")
 
-# Azure OpenAI environment variables
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
@@ -63,14 +62,26 @@ async def conversation_api(request: Request):
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
 
+        fallback_phrases = [
+            "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
+            "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
+            "that’s fine", "proceed", "give me an answer", "show me anyway"
+        ]
+
         fallback_flag = any(
-            any(trigger in m.content.lower() for trigger in ["yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
-    "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
-    "that’s fine", "proceed", "give me an answer", "show me anyway"])
+            any(phrase in m.content.lower() for phrase in fallback_phrases)
             for m in valid_messages[-2:]
         )
 
-        search_contexts = search_articles(user_question)
+        # Keyword extractor for improved matching
+        def extract_keywords(text):
+            words = re.findall(r'\w+', text.lower())
+            stopwords = {"what", "are", "the", "of", "and", "in", "on", "is", "to", "a", "how", "do", "does"}
+            keywords = [w for w in words if w not in stopwords]
+            return " ".join(keywords[:5])
+
+        keywords = extract_keywords(user_question)
+        search_contexts = search_articles(keywords)
 
         if not search_contexts and not fallback_flag:
             return {
