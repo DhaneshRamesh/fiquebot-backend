@@ -7,6 +7,7 @@ import httpx
 import re
 from dotenv import load_dotenv
 from azure_search import search_articles
+from utils import extract_metadata_from_message, needs_form  # ✅ NEW IMPORT
 
 load_dotenv(dotenv_path=".env.production")
 
@@ -62,6 +63,19 @@ async def conversation_api(request: Request):
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
 
+        # ✅ Metadata extraction from message
+        metadata = extract_metadata_from_message(user_question)
+        if needs_form(metadata):
+            missing_fields = [k for k, v in metadata.items() if v is None]
+            return {
+                "choices": [{
+                    "messages": [{
+                        "role": "assistant",
+                        "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"
+                    }]
+                }]
+            }
+
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
             "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
@@ -73,7 +87,6 @@ async def conversation_api(request: Request):
             for m in valid_messages[-2:]
         )
 
-        # Keyword extractor for improved matching
         def extract_keywords(text):
             words = re.findall(r'\w+', text.lower())
             stopwords = {"what", "are", "the", "of", "and", "in", "on", "is", "to", "a", "how", "do", "does"}
