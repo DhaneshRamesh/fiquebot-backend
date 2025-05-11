@@ -4,3 +4,5 @@ gunicorn
 httpx
 python-dotenv
 requests
+langdetect
+phonenumbers
