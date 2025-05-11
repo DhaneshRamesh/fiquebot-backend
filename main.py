@@ -49,7 +49,14 @@ async def conversation_api(request: Request):
         messages_data = payload.get("messages", [])
 
         if not messages_data:
-            return {"choices": [{"messages": [{"role": "assistant", "content": "👋 Hello! You haven't said anything yet."}]}]}
+            return {
+                "choices": [{
+                    "messages": [{
+                        "role": "assistant",
+                        "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
+                    }]
+                }]
+            }
 
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
@@ -63,11 +70,9 @@ async def conversation_api(request: Request):
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
 
-        # ✅ Combine all user messages to extract complete metadata
         all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
         metadata = extract_metadata_from_message(all_user_text)
 
-        # 🚧 Check for missing fields
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
             return {
@@ -78,16 +83,22 @@ async def conversation_api(request: Request):
                     }]
                 }]
             }
-        else:
+
+        if len(valid_messages) == 1:
             return {
                 "choices": [{
                     "messages": [{
                         "role": "assistant",
-                        "content": f"✅ Got it! Here's what I understood:\n- Country: {metadata['country']}\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}"
+                        "content": (
+                            f"✅ Got it! Here's what I understood:\n\n"
+                            f"- Country: {metadata['country']}\n"
+                            f"- Language: {metadata['language']}\n"
+                            f"- Phone: {metadata['phone']}\n\n"
+                            f"📘 Now, what would you like to know about fique?"
+                        )
                     }]
                 }]
             }
-
 
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
