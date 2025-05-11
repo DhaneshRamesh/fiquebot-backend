@@ -230,3 +230,38 @@ def comma_separated_string_to_list(s: str) -> List[str]:
     '''
     return s.strip().replace(' ', '').split(',')
 
+import re
+import phonenumbers
+import langdetect
+from langdetect.lang_detect_exception import LangDetectException
+
+def extract_metadata_from_message(text: str):
+    """
+    Extracts metadata such as country, language, and phone number from a given text input.
+    """
+    # Phone number detection (basic)
+    phone_match = re.search(r'(\+\d{1,3})?\s?\d{7,15}', text)
+    phone = phone_match.group(0) if phone_match else None
+
+    # Country detection from keywords (simple heuristic)
+    country_keywords = ["India", "USA", "UK", "Australia", "Canada", "Germany", "France", "China", "Japan"]
+    country = next((c for c in country_keywords if c.lower() in text.lower()), None)
+
+    # Language detection using langdetect
+    try:
+        lang_code = langdetect.detect(text)
+    except LangDetectException:
+        lang_code = None
+
+    return {
+        "country": country,
+        "language": lang_code,
+        "phone": phone
+    }
+
+def needs_form(metadata: dict):
+    """
+    Checks if any of the required metadata fields are missing.
+    """
+    required = ["country", "language", "phone"]
+    return any(metadata.get(k) is None for k in required)
