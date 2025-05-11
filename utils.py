@@ -265,3 +265,29 @@ def needs_form(metadata: dict):
     """
     required = ["country", "language", "phone"]
     return any(metadata.get(k) is None for k in required)
+
+def extract_metadata_from_message(text: str):
+    """
+    Extracts metadata such as country, language, and phone number from a given text input.
+    """
+    # 📞 Phone number detection (with optional + prefix or plain 10-digit)
+    phone_match = re.search(r'(\+\d{1,3})?\s?\d{7,15}|\b\d{10}\b', text)
+    phone = phone_match.group(0) if phone_match else None
+
+    # 🌍 Country detection from text
+    country_keywords = ["India", "USA", "UK", "Australia", "Canada", "Germany", "France", "China", "Japan"]
+    country = next((c for c in country_keywords if c.lower() in text.lower()), None)
+
+    # 🌐 Language detection
+    try:
+        from langdetect import detect
+        lang_code = detect(text)
+    except:
+        lang_code = None
+
+    return {
+        "country": country,
+        "language": lang_code,
+        "phone": phone
+    }
+
