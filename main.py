@@ -7,7 +7,7 @@ import httpx
 import re
 from dotenv import load_dotenv
 from azure_search import search_articles
-from utils import extract_metadata_from_message, needs_form  # ✅ NEW
+from utils import extract_metadata_from_message, needs_form
 
 load_dotenv(dotenv_path=".env.production")
 
@@ -15,9 +15,6 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
-
-if not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_KEY or not AZURE_OPENAI_MODEL:
-    raise ValueError("❌ Missing Azure OpenAI environment variables!")
 
 app = FastAPI()
 
@@ -69,7 +66,6 @@ async def conversation_api(request: Request):
 
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
-
         all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
         metadata = extract_metadata_from_message(all_user_text)
 
@@ -84,7 +80,7 @@ async def conversation_api(request: Request):
                 }]
             }
 
-        if len(valid_messages) == 1:
+        if len(valid_messages) < 3:
             return {
                 "choices": [{
                     "messages": [{
@@ -94,7 +90,7 @@ async def conversation_api(request: Request):
                             f"- Country: {metadata['country']}\n"
                             f"- Language: {metadata['language']}\n"
                             f"- Phone: {metadata['phone']}\n\n"
-                            f"📘 Now, what would you like to know about fique?"
+                            f"📘 Now, what would you like to ask about Fique?"
                         )
                     }]
                 }]
@@ -142,11 +138,6 @@ Context:
 Question:
 {user_question}"""
             }
-        else:
-            cleaned_messages[-1] = {
-                "role": "user",
-                "content": user_question
-            }
 
         headers = {
             "Content-Type": "application/json",
@@ -178,77 +169,3 @@ Question:
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
-
-@app.get("/history/ensure")
-async def history_ensure():
-    return {"message": "DB working (mocked)"}
-
-@app.get("/frontend_settings")
-async def frontend_settings():
-    return {"ui": {"theme": "light", "language": "en"}}
-
-@app.get("/history/list")
-async def history_list(offset: int = 0):
-    return mock_db["history"][offset:]
-
-@app.post("/history/read")
-async def history_read(payload: dict):
-    conv_id = payload.get("conversation_id")
-    for conv in mock_db["history"]:
-        if conv["id"] == conv_id:
-            return {"messages": conv.get("messages", [])}
-    return {"messages": []}
-
-@app.post("/history/generate")
-async def history_generate(payload: dict):
-    new_conv = {
-        "id": f"conv_{len(mock_db['history'])}",
-        "title": "New Conversation",
-        "createdAt": "2025-04-27",
-        "messages": payload.get("messages", [])
-    }
-    mock_db["history"].append(new_conv)
-    return new_conv
-
-@app.post("/history/update")
-async def history_update(payload: dict):
-    conv_id = payload.get("conversation_id")
-    for conv in mock_db["history"]:
-        if conv["id"] == conv_id:
-            conv["messages"] = payload.get("messages", [])
-            return {"status": "updated"}
-    return {"error": "Conversation not found"}
-
-@app.delete("/history/delete")
-async def history_delete(payload: dict):
-    conv_id = payload.get("conversation_id")
-    mock_db["history"] = [conv for conv in mock_db["history"] if conv["id"] != conv_id]
-    return {"status": "deleted"}
-
-@app.delete("/history/delete_all")
-async def history_delete_all():
-    mock_db["history"] = []
-    return {"status": "all deleted"}
-
-@app.post("/history/clear")
-async def history_clear(payload: dict):
-    conv_id = payload.get("conversation_id")
-    for conv in mock_db["history"]:
-        if conv["id"] == conv_id:
-            conv["messages"] = []
-            return {"status": "cleared"}
-    return {"error": "Conversation not found"}
-
-@app.post("/history/rename")
-async def history_rename(payload: dict):
-    conv_id = payload.get("conversation_id")
-    new_title = payload.get("title")
-    for conv in mock_db["history"]:
-        if conv["id"] == conv_id:
-            conv["title"] = new_title
-            return {"status": "renamed"}
-    return {"error": "Conversation not found"}
-
-@app.post("/history/message_feedback")
-async def history_message_feedback(payload: dict):
-    return {"status": "feedback logged"}
