@@ -7,7 +7,7 @@ import httpx
 import re
 from dotenv import load_dotenv
 from azure_search import search_articles
-from utils import extract_metadata_from_message, needs_form  # ✅ NEW IMPORT
+from utils import extract_metadata_from_message, needs_form  # ✅ NEW
 
 load_dotenv(dotenv_path=".env.production")
 
@@ -63,8 +63,11 @@ async def conversation_api(request: Request):
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
 
-        # ✅ Metadata extraction from message
-        metadata = extract_metadata_from_message(user_question)
+        # ✅ Combine all user messages to extract complete metadata
+        all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
+        metadata = extract_metadata_from_message(all_user_text)
+
+        # 🚧 Check for missing fields
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
             return {
