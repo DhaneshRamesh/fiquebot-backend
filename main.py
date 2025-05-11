@@ -78,6 +78,16 @@ async def conversation_api(request: Request):
                     }]
                 }]
             }
+        else:
+            return {
+                "choices": [{
+                    "messages": [{
+                        "role": "assistant",
+                        "content": f"✅ Got it! Here's what I understood:\n- Country: {metadata['country']}\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}"
+                    }]
+                }]
+            }
+
 
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
