@@ -75,8 +75,14 @@ async def conversation_api(request: Request):
 
         # Fallback to text extraction only if form metadata not provided
         if not metadata["phone"] or not metadata["country"]:
-            all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
-            metadata = extract_metadata_from_message(all_user_text)
+            async with httpx.AsyncClient(timeout=10) as client:
+                meta_response = await client.post(
+                    f"{request.base_url}extract_metadata",
+                    json={"text": all_user_text}
+                )
+            if meta_response.status_code == 200:
+                metadata = meta_response.json()
+
 
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
