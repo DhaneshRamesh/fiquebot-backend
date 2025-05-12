@@ -67,7 +67,16 @@ async def conversation_api(request: Request):
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
         all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
-        metadata = extract_metadata_from_message(all_user_text)
+        metadata = {
+            "phone": payload.get("phone"),
+            "country": payload.get("country"),
+            "language": payload.get("language")
+        }
+
+        # Fallback to text extraction only if form metadata not provided
+        if not metadata["phone"] or not metadata["country"]:
+            all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
+            metadata = extract_metadata_from_message(all_user_text)
 
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
