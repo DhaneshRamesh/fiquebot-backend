@@ -178,3 +178,51 @@ Question:
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
+
+@app.post("/extract_metadata")
+async def extract_metadata_via_openai(request: Request):
+    import json
+    data = await request.json()
+    user_input = data.get("text")
+
+    if not user_input:
+        return {"error": "No text provided."}
+
+    openai_body = {
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a metadata extraction assistant. Extract phone number, country, and language from the text below. Respond strictly in this JSON format: { \"phone\": \"\", \"country\": \"\", \"language\": \"\", \"confidence\": 0.95 }"
+            },
+            { "role": "user", "content": user_input }
+        ],
+        "temperature": 0,
+        "max_tokens": 200,
+        "top_p": 1,
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "stream": False,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": AZURE_OPENAI_KEY
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+            headers=headers,
+            json=openai_body
+        )
+
+    try:
+        result = response.json()
+        reply = result["choices"][0]["message"]["content"]
+        return json.loads(reply)
+    except Exception as e:
+        return {
+            "error": "Failed to parse OpenAI response.",
+            "raw": reply,
+            "details": str(e)
+        }
