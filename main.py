@@ -73,7 +73,7 @@ async def conversation_api(request: Request):
             "language": payload.get("language")
         }
 
-        # Fallback to text extraction only if form metadata not provided
+        # Extract metadata if missing
         if not metadata["phone"] or not metadata["country"]:
             async with httpx.AsyncClient(timeout=10) as client:
                 meta_response = await client.post(
@@ -82,7 +82,6 @@ async def conversation_api(request: Request):
                 )
             if meta_response.status_code == 200:
                 metadata = meta_response.json()
-
 
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
@@ -142,18 +141,11 @@ async def conversation_api(request: Request):
             }
 
         if search_contexts:
-            context_block = "
+            context_block = "\n\n".join([
+                f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
+                for item in search_contexts
+            ]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
 
-".join([
-    f"{item['snippet']}
-
-Source: {item['title']} ({item['url']})"
-    for item in search_contexts
-]) if isinstance(search_contexts[0], dict) else "
-
-".join(search_contexts)
-
-top_title = search_contexts[0]["title"] if isinstance(search_contexts[0], dict) else "Fique Reference"
             cleaned_messages[-1] = {
                 "role": "user",
                 "content": f"""Use the following context to answer the question.
@@ -169,6 +161,7 @@ Question:
             "Content-Type": "application/json",
             "api-key": AZURE_OPENAI_KEY
         }
+
         body = {
             "messages": cleaned_messages,
             "temperature": 0.7,
@@ -195,6 +188,7 @@ Question:
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
+
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
