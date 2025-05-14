@@ -142,7 +142,10 @@ async def conversation_api(request: Request):
             }
 
         if search_contexts:
-            context_block = "\n\n---\n\n".join(search_contexts)
+            context_block = "\n\n".join([
+    f"{item['snippet']}\n\n**Source:** [{item['title']}]({item['url']})"
+    for item in search_contexts
+]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
             cleaned_messages[-1] = {
                 "role": "user",
                 "content": f"""Use the following context to answer the question.
