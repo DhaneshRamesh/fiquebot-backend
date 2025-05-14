@@ -148,7 +148,7 @@ async def conversation_api(request: Request):
 
             cleaned_messages[-1] = {
                 "role": "user",
-                "content": f"""Use the following context to answer the question.
+                "content": f"""Use the following context to answer the question. Cite the article **title** and **URL** explicitly in your response, ideally at the end or where relevant.
 
 Context:
 {context_block}
