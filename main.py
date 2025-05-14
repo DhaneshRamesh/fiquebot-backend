@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -33,27 +34,11 @@ class Message(BaseModel):
 class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
 
-mock_db = {"history": []}
-
-@app.get("/")
-async def root():
-    return {"message": "Backend online!"}
-
 @app.post("/conversation")
 async def conversation_api(request: Request):
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
-
-        if not messages_data:
-            return {
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
-                    }]
-                }]
-            }
 
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
@@ -62,7 +47,14 @@ async def conversation_api(request: Request):
         ]
 
         if not valid_messages:
-            return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}]}
+            return {
+                "choices": [{
+                    "messages": [{
+                        "role": "assistant",
+                        "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
+                    }]
+                }]
+            }
 
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
@@ -73,7 +65,6 @@ async def conversation_api(request: Request):
             "language": payload.get("language")
         }
 
-        # Fallback to text extraction only if form metadata not provided
         if not metadata["phone"] or not metadata["country"]:
             async with httpx.AsyncClient(timeout=10) as client:
                 meta_response = await client.post(
@@ -82,7 +73,6 @@ async def conversation_api(request: Request):
                 )
             if meta_response.status_code == 200:
                 metadata = meta_response.json()
-
 
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
@@ -142,19 +132,10 @@ async def conversation_api(request: Request):
             }
 
         if search_contexts:
-            context_block = "\n\n".join([
-    f"{item['snippet']}\n\n**Source:** [{item['title']}]({item['url']})"
-    for item in search_contexts
-]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
+            context_block = "\n\n---\n\n".join(search_contexts)
             cleaned_messages[-1] = {
                 "role": "user",
-                "content": f"""Use the following context to answer the question.
-
-Context:
-{context_block}
-
-Question:
-{user_question}"""
+                "content": "Use the following context to answer the question.\n\nContext:\n" + context_block + "\n\nQuestion:\n" + user_question
             }
 
         headers = {
@@ -162,7 +143,16 @@ Question:
             "api-key": AZURE_OPENAI_KEY
         }
         body = {
-            "messages": cleaned_messages,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant that uses the provided context to answer the user question. "
+                        "Always cite your sources at the end using Markdown links from the context exactly as they appear. "
+                        "If no context is provided, ask the user for clarification."
+                    )
+                }
+            ] + cleaned_messages,
             "temperature": 0.7,
             "top_p": 0.95,
             "frequency_penalty": 0,
@@ -181,57 +171,8 @@ Question:
         response.raise_for_status()
         result = response.json()
         assistant_message = result["choices"][0]["message"]
-
         return {"choices": [{"messages": [assistant_message]}]}
 
     except Exception as e:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
-
-@app.post("/extract_metadata")
-async def extract_metadata_via_openai(request: Request):
-    import json
-    data = await request.json()
-    user_input = data.get("text")
-
-    if not user_input:
-        return {"error": "No text provided."}
-
-    openai_body = {
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a metadata extraction assistant. Extract phone number, country, and language from the text below. Respond strictly in this JSON format: { \"phone\": \"\", \"country\": \"\", \"language\": \"\", \"confidence\": 0.95 }"
-            },
-            { "role": "user", "content": user_input }
-        ],
-        "temperature": 0,
-        "max_tokens": 200,
-        "top_p": 1,
-        "frequency_penalty": 0,
-        "presence_penalty": 0,
-        "stream": False,
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": AZURE_OPENAI_KEY
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
-            headers=headers,
-            json=openai_body
-        )
-
-    try:
-        result = response.json()
-        reply = result["choices"][0]["message"]["content"]
-        return json.loads(reply)
-    except Exception as e:
-        return {
-            "error": "Failed to parse OpenAI response.",
-            "raw": reply,
-            "details": str(e)
-        }
