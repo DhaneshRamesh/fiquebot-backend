@@ -143,19 +143,13 @@ async def conversation_api(request: Request):
 
         if search_contexts:
             context_block = "\n\n".join([
-    f"{item['snippet']}\n\n**Source:** [{item['title']}]({item['url']})"
+    f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
     for item in search_contexts
 ]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
-            cleaned_messages[-1] = {
-                "role": "user",
-                "content": f"""Use the following context to answer the question.
-
-Context:
-{context_block}
-
-Question:
-{user_question}"""
-            }
+            cleaned_messages.insert(0, {
+                "role": "system",
+                "content": f"You are a helpful assistant. Use the following context to answer the user question. If it's not in the context, say 'I don't know'.\n\nContext:\n{context_block}"
+            })
 
         headers = {
             "Content-Type": "application/json",
