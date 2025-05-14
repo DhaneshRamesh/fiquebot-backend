@@ -1,3 +1,4 @@
+
 import os
 import requests
 from dotenv import load_dotenv
@@ -35,17 +36,18 @@ def search_articles(query, top_k=3, min_score=0.4):
 
     filtered = []
     for doc in results:
-        content = doc.get('article_content')  # Make sure this matches your index field
-        title = doc.get('title', 'Untitled')
-        score = doc.get('@search.score', 0)
+        content = doc.get("article_content") or doc.get("content")
+        title = doc.get("title", "Untitled")
+        url = doc.get("url") or "#"
+        score = doc.get("@search.score", 0)
 
         if content and score >= min_score:
-            filtered.append(f"{title}\n{content}")
+            filtered.append({
+                "title": title,
+                "url": url,
+                "snippet": content[:500] + "..." if len(content) > 500 else content
+            })
 
-    # 🔍 Debug logs
     print(f"🔍 Search query: {query}")
-    print(f"📄 Matches found: {len(filtered)}")
-    for i, doc in enumerate(filtered):
-        print(f"📝 [{i+1}] {doc[:200]}...\n")
-
+    print(f"📄 Articles returned: {len(filtered)}")
     return filtered
