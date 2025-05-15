@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -40,14 +39,64 @@ async def root():
     return {"message": "Backend online!"}
 
 @app.post("/conversation")
-async def conversation_api(request: Request):
+async def run_chatbot_logic(messages, metadata):
+    try:
+        cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+        user_question = cleaned_messages[-1]['content']
+        def extract_keywords(text):
+            words = re.findall(r'\w+', text.lower())
+            stopwords = {"what", "are", "the", "of", "and", "in", "on", "is", "to", "a", "how", "do", "does"}
+            keywords = [w for w in words if w not in stopwords]
+            return " ".join(keywords[:5])
+        keywords = extract_keywords(user_question)
+        search_contexts = search_articles(keywords)
+        fallback_phrases = ["yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
+            "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
+            "that’s fine", "proceed", "give me an answer", "show me anyway"]
+        fallback_flag = any(
+            any(phrase in m['content'].lower() for phrase in fallback_phrases)
+            for m in messages[-2:]
+        )
+        if not search_contexts and not fallback_flag:
+            return [{"role": "assistant", "content": "🤖 I couldn’t find anything in our articles. Would you like me to try a general answer instead?"}]
+        if search_contexts:
+            context_block = "\n\n".join([
+                f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
+                for item in search_contexts
+            ]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
+            cleaned_messages[-1] = {
+                "role": "user",
+                "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
+            }
+        headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
+        body = {
+            "messages": cleaned_messages,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "max_tokens": 1000,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers=headers,
+                json=body
+            )
+        result = response.json()
+        return [result["choices"][0]["message"]]
+    except Exception as e:
+        print("❌ Error in run_chatbot_logic:", str(e))
+        import traceback; traceback.print_exc()
+        return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
+
     import traceback
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
 
         if not messages_data:
-            return {
                 "choices": [{
                     "messages": [{
                         "role": "assistant",
@@ -203,7 +252,7 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     user_input = Body.strip()
     messages = [{"role": "user", "content": user_input}]
     
-    response = await conversation_api(Request({
+    response = await run_chatbot_logic(messages, metadata)
         "type": "http",
         "method": "POST",
         "headers": {},
