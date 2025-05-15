@@ -299,7 +299,7 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     
     # Validate Twilio credentials
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print("❌ Twilio credentials missing")
+        print(f"❌ Twilio credentials missing: SID={TWILIO_ACCOUNT_SID}, Token={TWILIO_AUTH_TOKEN}")
         return PlainTextResponse("Twilio credentials missing", status_code=500)
     
     # Send message using Twilio REST API
@@ -312,7 +312,7 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
         )
         print(f"✅ Message sent to {From}, SID: {message.sid}")
     except Exception as e:
-        print(f"❌ Error sending message via Twilio REST API: {e}")
+        print(f"❌ Error sending message via Twilio REST API: {str(e)}")
         return PlainTextResponse("Failed to send message", status_code=500)
     
     # Return a simple response (no TwiML, no XML tags)
