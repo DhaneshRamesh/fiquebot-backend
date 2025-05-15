@@ -6,7 +6,9 @@ from typing import List, Optional
 import os
 import httpx
 import re
+import json
 from dotenv import load_dotenv
+from twilio.twiml.messaging_response import MessagingResponse
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 
@@ -96,7 +98,7 @@ async def conversation_logic(messages, metadata):
         return [result["choices"][0]["message"]]
     
     except Exception as e:
-        print("❌ Error in run_chatbot_logic:", str(e))
+        print("❌ Error in conversation_logic:", str(e))
         import traceback
         traceback.print_exc()
         return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
@@ -250,21 +252,33 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     user_input = Body.strip()
     messages = [{"role": "user", "content": user_input}]
     
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post("http://localhost:8000/conversation", json={
-            "messages": [{"role": "user", "content": Body}],
-            "phone": From,
-            "country": "auto",
-            "language": "en"
-        })
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://fiquebot-backend.onrender.com/conversation",
+                json={
+                    "messages": [{"role": "user", "content": Body}],
+                    "phone": From,
+                    "country": "auto",
+                    "language": "en"
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            text_reply = result["choices"][0]["messages"][0]["content"]
+    except httpx.HTTPError as e:
+        print(f"❌ HTTP error in twilio-webhook: {e}")
+        text_reply = "⚠️ Sorry, something went wrong. Please try again later."
+    except Exception as e:
+        print(f"❌ Unexpected error in twilio-webhook: {e}")
+        text_reply = "⚠️ Sorry, an unexpected error occurred."
     
-    result = response.json()
-    text_reply = result["choices"][0]["messages"][0]["content"]
-    return PlainTextResponse(text_reply)
+    reply = MessagingResponse()
+    reply.message(text_reply)
+    return PlainTextResponse(str(reply))
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
-    import json
     data = await request.json()
     user_input = data.get("text")
 
@@ -312,16 +326,36 @@ async def extract_metadata_via_openai(request: Request):
 
 @app.post("/whatsapp")
 async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
+    print(f"📩 Received WhatsApp message from {From}: {Body}")
+    user_input = Body.strip()
+    messages = [{"role": "user", "content": user_input}]
+    
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post("http://localhost:8000/conversation", json={
-                "messages": [{"role": "user", "content": Body}]
-            })
-        result = response.json()
-        reply_text = result["choices"][0]["messages"][0]["content"]
+            response = await client.post(
+                "https://fiquebot-backend.onrender.com/conversation",
+                json={
+                    "messages": [{"role": "user", "content": Body}],
+                    "phone": From,
+                    "country": "auto",
+                    "language": "en"
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            text_reply = result["choices"][0]["messages"][0]["content"]
+    except httpx.HTTPError as e:
+        print(f"❌ HTTP error in whatsapp_webhook: {e}")
+        text_reply = "⚠️ Sorry, something went wrong. Please try again later."
     except Exception as e:
-        reply_text = "⚠️ Sorry, something went wrong."
-
+        print(f"❌ Unexpected error in whatsapp_webhook: {e}")
+        text_reply = "⚠️ Sorry, an unexpected error occurred."
+    
     reply = MessagingResponse()
-    reply.message(reply_text)
+    reply.message(text_reply)
     return PlainTextResponse(str(reply))
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
