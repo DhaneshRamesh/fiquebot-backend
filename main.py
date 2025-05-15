@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -265,7 +266,7 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     }))
 
     text_reply = response["choices"][0]["messages"][0]["content"]
-    return PlainTextResponse(text_reply)
+        return PlainTextResponse(text_reply)
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
