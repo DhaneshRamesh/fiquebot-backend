@@ -12,6 +12,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 
+# Load environment variables
 load_dotenv(dotenv_path=".env.production")
 
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -20,6 +21,9 @@ AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
 
 app = FastAPI()
+
+# In-memory storage for conversation history (key: phone number, value: list of messages)
+conversation_history = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -250,28 +254,27 @@ async def conversation_endpoint(request: Request):
 async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     print(f"📩 Received WhatsApp message from {From}: {Body}")
     user_input = Body.strip()
-    messages = [{"role": "user", "content": user_input}]
+    
+    # Retrieve or initialize conversation history for this user
+    if From not in conversation_history:
+        conversation_history[From] = []
+    
+    # Append the new user message to the history
+    conversation_history[From].append({"role": "user", "content": user_input})
+    
+    # Prepare metadata
+    metadata = {"phone": From, "country": "auto", "language": "en"}
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://fiquebot-backend.onrender.com/conversation",
-                json={
-                    "messages": [{"role": "user", "content": Body}],
-                    "phone": From,
-                    "country": "auto",
-                    "language": "en"
-                }
-            )
-            response.raise_for_status()
-            result = response.json()
-            text_reply = result["choices"][0]["messages"][0]["content"]
-    except httpx.HTTPError as e:
-        print(f"❌ HTTP error in twilio-webhook: {e}")
-        text_reply = "⚠️ Sorry, something went wrong. Please try again later."
+        # Pass the full conversation history to conversation_logic
+        result = await conversation_logic(conversation_history[From], metadata)
+        text_reply = result[0]["content"]
+        
+        # Append the assistant's response to the history
+        conversation_history[From].append({"role": "assistant", "content": text_reply})
     except Exception as e:
-        print(f"❌ Unexpected error in twilio-webhook: {e}")
-        text_reply = "⚠️ Sorry, an unexpected error occurred."
+        print(f"❌ Error in twilio-webhook: {e}")
+        text_reply = "⚠️ Sorry, something went wrong."
     
     reply = MessagingResponse()
     reply.message(text_reply)
@@ -328,28 +331,27 @@ async def extract_metadata_via_openai(request: Request):
 async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
     print(f"📩 Received WhatsApp message from {From}: {Body}")
     user_input = Body.strip()
-    messages = [{"role": "user", "content": user_input}]
+    
+    # Retrieve or initialize conversation history for this user
+    if From not in conversation_history:
+        conversation_history[From] = []
+    
+    # Append the new user message to the history
+    conversation_history[From].append({"role": "user", "content": user_input})
+    
+    # Prepare metadata
+    metadata = {"phone": From, "country": "auto", "language": "en"}
     
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://fiquebot-backend.onrender.com/conversation",
-                json={
-                    "messages": [{"role": "user", "content": Body}],
-                    "phone": From,
-                    "country": "auto",
-                    "language": "en"
-                }
-            )
-            response.raise_for_status()
-            result = response.json()
-            text_reply = result["choices"][0]["messages"][0]["content"]
-    except httpx.HTTPError as e:
-        print(f"❌ HTTP error in whatsapp_webhook: {e}")
-        text_reply = "⚠️ Sorry, something went wrong. Please try again later."
+        # Pass the full conversation history to conversation_logic
+        result = await conversation_logic(conversation_history[From], metadata)
+        text_reply = result[0]["content"]
+        
+        # Append the assistant's response to the history
+        conversation_history[From].append({"role": "assistant", "content": text_reply})
     except Exception as e:
-        print(f"❌ Unexpected error in whatsapp_webhook: {e}")
-        text_reply = "⚠️ Sorry, an unexpected error occurred."
+        print(f"❌ Error in whatsapp_webhook: {e}")
+        text_reply = "⚠️ Sorry, something went wrong."
     
     reply = MessagingResponse()
     reply.message(text_reply)
