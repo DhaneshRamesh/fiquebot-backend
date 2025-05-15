@@ -98,7 +98,6 @@ async def run_chatbot_logic(messages, metadata):
         messages_data = payload.get("messages", [])
 
         if not messages_data:
-        if not messages_data:
             return {
                 "choices": [{
                     "messages": [{
@@ -107,7 +106,6 @@ async def run_chatbot_logic(messages, metadata):
                     }]
                 }]
             }
-        valid_messages = [
             Message(role=msg["role"], content=msg["content"])
             for msg in messages_data
             if isinstance(msg, dict) and msg.get("role") and msg.get("content")
