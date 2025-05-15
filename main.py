@@ -8,7 +8,7 @@ import httpx
 import re
 import json
 from dotenv import load_dotenv
-from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 
@@ -19,6 +19,11 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
+
+# Twilio credentials
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "whatsapp:+14155238886")
 
 app = FastAPI()
 
@@ -264,41 +269,54 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
             del conversation_history[From]
             print(f"🔄 Reset conversation history for {From}")
         text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
-        reply = MessagingResponse()
-        reply.message(text_reply)
-        return PlainTextResponse(str(reply))
+    else:
+        # Retrieve or initialize conversation history for this user
+        if From not in conversation_history:
+            conversation_history[From] = []
+        
+        # Append the new user message to the history
+        conversation_history[From].append({"role": "user", "content": user_input})
+        
+        # Log the current conversation history length
+        print(f"📜 Conversation history for {From}: {len(conversation_history[From])} messages")
+        
+        # Prepare metadata
+        metadata = {"phone": From, "country": "auto", "language": "en"}
+        
+        try:
+            # Pass the full conversation history to conversation_logic
+            result = await conversation_logic(conversation_history[From], metadata)
+            text_reply = result[0]["content"]
+            
+            # Append the assistant's response to the history
+            conversation_history[From].append({"role": "assistant", "content": text_reply})
+        except Exception as e:
+            print(f"❌ Error in twilio-webhook: {e}")
+            text_reply = "⚠️ Sorry, something went wrong."
     
-    # Retrieve or initialize conversation history for this user
-    if From not in conversation_history:
-        conversation_history[From] = []
+    # Log the plain message content
+    print(f"📤 Sending message to {From}: {text_reply}")
     
-    # Append the new user message to the history
-    conversation_history[From].append({"role": "user", "content": user_input})
+    # Validate Twilio credentials
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        print("❌ Twilio credentials missing")
+        return PlainTextResponse("Twilio credentials missing", status_code=500)
     
-    # Log the current conversation history length
-    print(f"📜 Conversation history for {From}: {len(conversation_history[From])} messages")
-    
-    # Prepare metadata
-    metadata = {"phone": From, "country": "auto", "language": "en"}
-    
+    # Send message using Twilio REST API
     try:
-        # Pass the full conversation history to conversation_logic
-        result = await conversation_logic(conversation_history[From], metadata)
-        text_reply = result[0]["content"]
-        
-        # Log the plain message content without XML tags
-        print(f"📤 Sending message to {From}: {text_reply}")
-        
-        # Append the assistant's response to the history
-        conversation_history[From].append({"role": "assistant", "content": text_reply})
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            body=text_reply,
+            from_=TWILIO_PHONE_NUMBER,
+            to=From
+        )
+        print(f"✅ Message sent to {From}, SID: {message.sid}")
     except Exception as e:
-        print(f"❌ Error in twilio-webhook: {e}")
-        text_reply = "⚠️ Sorry, something went wrong."
+        print(f"❌ Error sending message via Twilio REST API: {e}")
+        return PlainTextResponse("Failed to send message", status_code=500)
     
-    # Create TwiML response for Twilio
-    reply = MessagingResponse()
-    reply.message(text_reply)
-    return PlainTextResponse(str(reply))
+    # Return a simple response (no TwiML, no XML tags)
+    return PlainTextResponse("Message sent")
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
