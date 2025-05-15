@@ -1,11 +1,13 @@
-from fastapi import FastAPI, Request
+
+from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import httpx
 import re
-from dotenv import load_dotenv
+from dotenv import load_dotenvac
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 
@@ -32,8 +34,6 @@ class Message(BaseModel):
 
 class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
-
-mock_db = {"history": []}
 
 @app.get("/")
 async def root():
@@ -73,7 +73,6 @@ async def conversation_api(request: Request):
             "language": payload.get("language")
         }
 
-        # Extract metadata if missing
         if not metadata["phone"] or not metadata["country"]:
             async with httpx.AsyncClient(timeout=10) as client:
                 meta_response = await client.post(
@@ -100,10 +99,16 @@ async def conversation_api(request: Request):
                     "messages": [{
                         "role": "assistant",
                         "content": (
-                            f"✅ Got it! Here's what I understood:\n\n"
-                            f"- Country: {metadata['country']}\n"
-                            f"- Language: {metadata['language']}\n"
-                            f"- Phone: {metadata['phone']}\n\n"
+                            f"✅ Got it! Here's what I understood:
+
+"
+                            f"- Country: {metadata['country']}
+"
+                            f"- Language: {metadata['language']}
+"
+                            f"- Phone: {metadata['phone']}
+
+"
                             f"📘 Now, what would you like to ask about Fique?"
                         )
                     }]
@@ -148,7 +153,7 @@ async def conversation_api(request: Request):
 
             cleaned_messages[-1] = {
                 "role": "user",
-                "content": f"""Use the following context to answer the question. Cite the article **title** and **URL** explicitly in your response, ideally at the end or where relevant.
+                "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.
 
 Context:
 {context_block}
@@ -189,6 +194,25 @@ Question:
         print(f"❌ Error during OpenAI call: {e}")
         return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
 
+@app.post("/twilio-webhook")
+async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
+    user_input = Body.strip()
+    messages = [{"role": "user", "content": user_input}]
+    
+    response = await conversation_api(Request({
+        "type": "http",
+        "method": "POST",
+        "headers": {},
+        "json": lambda: {
+            "messages": messages,
+            "phone": From,
+            "country": "auto",
+            "language": "en"
+        }
+    }))
+
+    text_reply = response["choices"][0]["messages"][0]["content"]
+    return PlainTextResponse(text_reply)
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
