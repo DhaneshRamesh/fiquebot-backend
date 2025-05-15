@@ -98,12 +98,14 @@ async def run_chatbot_logic(messages, metadata):
         messages_data = payload.get("messages", [])
 
         if not messages_data:
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
-                    }]
+        return {
+            "choices": [{
+                "messages": [{
+                    "role": "assistant",
+                    "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
                 }]
+            }]
+        }
             }
 
         valid_messages = [
