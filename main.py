@@ -106,7 +106,6 @@ async def run_chatbot_logic(messages, metadata):
                 }]
             }]
         }
-            }
 
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
@@ -317,3 +316,27 @@ async def extract_metadata_via_openai(request: Request):
             "raw": reply,
             "details": str(e)
         }
+
+from fastapi import Form
+from fastapi.responses import PlainTextResponse
+from twilio.twiml.messaging_response import MessagingResponse
+import httpx
+
+@app.post("/whatsapp")
+async def whatsapp_webhook(
+    From: str = Form(...),
+    Body: str = Form(...)
+):
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("http://localhost:8000/chat", json={
+                "messages": [{"role": "user", "content": Body}]
+            })
+            result = response.json()
+            reply_text = result["choices"][0]["messages"][0]["content"]
+    except Exception as e:
+        reply_text = "⚠️ Sorry, something went wrong."
+
+    reply = MessagingResponse()
+    reply.message(reply_text)
+    return PlainTextResponse(str(reply))
