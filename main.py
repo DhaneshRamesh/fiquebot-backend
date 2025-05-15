@@ -7,7 +7,7 @@ from typing import List, Optional
 import os
 import httpx
 import re
-from dotenv import load_dotenvac
+from dotenv import load_dotenv
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 
@@ -99,7 +99,8 @@ async def conversation_api(request: Request):
                     "messages": [{
                         "role": "assistant",
                         "content": (
-                            f"✅ Got it! Here's what I understood:
+f"""✅ Got it! Here's what I understood:
+
 
 "
                             f"- Country: {metadata['country']}
@@ -109,7 +110,8 @@ async def conversation_api(request: Request):
                             f"- Phone: {metadata['phone']}
 
 "
-                            f"📘 Now, what would you like to ask about Fique?"
+f"📘 Now, what would you like to ask about Fique?"
+"""
                         )
                     }]
                 }]
