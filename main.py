@@ -41,6 +41,7 @@ async def root():
 
 @app.post("/conversation")
 async def conversation_api(request: Request):
+    import traceback
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
@@ -198,6 +199,7 @@ Question:
 
 @app.post("/twilio-webhook")
 async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
+    print(f"📩 Received WhatsApp message from {From}: {Body}")
     user_input = Body.strip()
     messages = [{"role": "user", "content": user_input}]
     
