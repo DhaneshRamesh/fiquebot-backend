@@ -258,13 +258,12 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
         "type": "http",
         "method": "POST",
         "headers": {},
-        "json": lambda: {
-            "messages": messages,
+        response = await client.post("http://localhost:8000/chat", json={
+            "messages": [{"role": "user", "content": Body}],
             "phone": From,
             "country": "auto",
             "language": "en"
-        }
-    }))
+        })
 
     text_reply = response["choices"][0]["messages"][0]["content"]
         return PlainTextResponse(text_reply)
