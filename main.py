@@ -132,6 +132,8 @@ async def conversation_endpoint(request: Request):
         if not valid_messages:
             return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}]}
         
+        print(f"📜 Conversation length: {len(valid_messages)} messages")
+        
         cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
         user_question = valid_messages[-1].content
         all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
@@ -234,6 +236,7 @@ async def conversation_endpoint(request: Request):
         }
         
         async with httpx.AsyncClient(timeout=30) as client:
+            print(f"📞 Making OpenAI call with {len(cleaned_messages)} messages")
             response = await client.post(
                 f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
                 headers=headers,
@@ -253,7 +256,17 @@ async def conversation_endpoint(request: Request):
 @app.post("/twilio-webhook")
 async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     print(f"📩 Received WhatsApp message from {From}: {Body}")
-    user_input = Body.strip()
+    user_input = Body.strip().lower()
+    
+    # Check for reset command
+    if user_input == "reset":
+        if From in conversation_history:
+            del conversation_history[From]
+            print(f"🔄 Reset conversation history for {From}")
+        text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
+        reply = MessagingResponse()
+        reply.message(text_reply)
+        return PlainTextResponse(str(reply))
     
     # Retrieve or initialize conversation history for this user
     if From not in conversation_history:
@@ -261,6 +274,9 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
     
     # Append the new user message to the history
     conversation_history[From].append({"role": "user", "content": user_input})
+    
+    # Log the current conversation history length
+    print(f"📜 Conversation history for {From}: {len(conversation_history[From])} messages")
     
     # Prepare metadata
     metadata = {"phone": From, "country": "auto", "language": "en"}
@@ -270,12 +286,16 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
         result = await conversation_logic(conversation_history[From], metadata)
         text_reply = result[0]["content"]
         
+        # Log the plain message content without XML tags
+        print(f"📤 Sending message to {From}: {text_reply}")
+        
         # Append the assistant's response to the history
         conversation_history[From].append({"role": "assistant", "content": text_reply})
     except Exception as e:
         print(f"❌ Error in twilio-webhook: {e}")
         text_reply = "⚠️ Sorry, something went wrong."
     
+    # Create TwiML response for Twilio
     reply = MessagingResponse()
     reply.message(text_reply)
     return PlainTextResponse(str(reply))
@@ -326,36 +346,6 @@ async def extract_metadata_via_openai(request: Request):
             "raw": reply,
             "details": str(e)
         }
-
-@app.post("/whatsapp")
-async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
-    print(f"📩 Received WhatsApp message from {From}: {Body}")
-    user_input = Body.strip()
-    
-    # Retrieve or initialize conversation history for this user
-    if From not in conversation_history:
-        conversation_history[From] = []
-    
-    # Append the new user message to the history
-    conversation_history[From].append({"role": "user", "content": user_input})
-    
-    # Prepare metadata
-    metadata = {"phone": From, "country": "auto", "language": "en"}
-    
-    try:
-        # Pass the full conversation history to conversation_logic
-        result = await conversation_logic(conversation_history[From], metadata)
-        text_reply = result[0]["content"]
-        
-        # Append the assistant's response to the history
-        conversation_history[From].append({"role": "assistant", "content": text_reply})
-    except Exception as e:
-        print(f"❌ Error in whatsapp_webhook: {e}")
-        text_reply = "⚠️ Sorry, something went wrong."
-    
-    reply = MessagingResponse()
-    reply.message(text_reply)
-    return PlainTextResponse(str(reply))
 
 if __name__ == "__main__":
     import uvicorn
