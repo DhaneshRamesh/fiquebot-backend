@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -106,10 +105,10 @@ async def run_chatbot_logic(messages, metadata):
                     }]
                 }]
             }
+        valid_messages = [
             Message(role=msg["role"], content=msg["content"])
             for msg in messages_data
             if isinstance(msg, dict) and msg.get("role") and msg.get("content")
-        ]
 
         if not valid_messages:
             return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}]}
