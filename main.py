@@ -313,10 +313,10 @@ async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
         print(f"✅ Message sent to {From}, SID: {message.sid}")
     except Exception as e:
         print(f"❌ Error sending message via Twilio REST API: {str(e)}")
-        return PlainTextResponse("Failed to send message", status_code=500)
+        return PlainTextResponse("", status_code=500)  # Return empty response on error
     
-    # Return a simple response (no TwiML, no XML tags)
-    return PlainTextResponse("Message sent")
+    # Return an empty response to Twilio (no content to send to WhatsApp)
+    return PlainTextResponse("")
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
