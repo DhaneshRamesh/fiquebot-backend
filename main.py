@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -145,18 +145,32 @@ async def conversation_logic(messages, metadata):
         traceback.print_exc()
         return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
 
+async def stream_response(messages, session_id):
+    # Simulate streaming by sending the response as newline-separated JSON objects
+    response_data = {
+        "choices": [{"messages": messages}],
+        "session_id": session_id
+    }
+    # Send the response as a single chunk followed by an empty line to signal end
+    yield json.dumps(response_data) + "\n"
+    yield "\n"
+
 @app.post("/conversation")
 async def conversation_endpoint(request: Request):
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
-        session_id = payload.get("session_id", str(uuid.uuid4()))  # Generate session_id if not provided
+        session_id = payload.get("session_id", str(uuid.uuid4()))
         print(f"📩 Received payload: {payload}, Session ID: {session_id}")
         
         if not messages_data:
-            response = {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}], "session_id": session_id}
-            print(f"📤 Sending response: {response}")
-            return response
+            return StreamingResponse(
+                stream_response(
+                    [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}],
+                    session_id
+                ),
+                media_type="text/event-stream"
+            )
         
         # Filter out invalid messages
         valid_messages = [
@@ -166,9 +180,13 @@ async def conversation_endpoint(request: Request):
         ]
         
         if not valid_messages:
-            response = {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}], "session_id": session_id}
-            print(f"📤 Sending response: {response}")
-            return response
+            return StreamingResponse(
+                stream_response(
+                    [{"role": "assistant", "content": "⚠️ Invalid message format."}],
+                    session_id
+                ),
+                media_type="text/event-stream"
+            )
         
         # Initialize or retrieve conversation history for this session
         if session_id not in conversation_history:
@@ -200,13 +218,17 @@ async def conversation_endpoint(request: Request):
         # Ask for metadata only on the first message if incomplete
         if len(conversation_history[session_id]) == 1 and needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
-            response = {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}], "session_id": session_id}
-            print(f"📤 Sending response: {response}")
-            return response
+            return StreamingResponse(
+                stream_response(
+                    [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}],
+                    session_id
+                ),
+                media_type="text/event-stream"
+            )
         
         # Confirm metadata on the second message if provided
         if len(conversation_history[session_id]) == 2 and (metadata["phone"] and metadata["country"]):
-            response = {"messages": [{
+            response_message = {
                 "role": "assistant",
                 "content": (
                     f"""✅ Got it! Here's what I understood:\n\n"""
@@ -215,23 +237,30 @@ async def conversation_endpoint(request: Request):
                     f"- Phone: {metadata['phone']}\n\n"
                     f"📘 Now, what would you like to ask about Fique?"
                 )
-            }], "session_id": session_id}
-            conversation_history[session_id].append({"role": "assistant", "content": response["messages"][0]["content"]})
-            print(f"📤 Sending response: {response}")
-            return response
+            }
+            conversation_history[session_id].append(response_message)
+            return StreamingResponse(
+                stream_response([response_message], session_id),
+                media_type="text/event-stream"
+            )
         
         # Proceed to conversation logic for subsequent messages
         result = await conversation_logic(conversation_history[session_id], metadata)
-        response = {"messages": [result[0]], "session_id": session_id}
         conversation_history[session_id].append({"role": "assistant", "content": result[0]["content"]})
-        print(f"📤 Sending response: {response}")
-        return response
+        return StreamingResponse(
+            stream_response(result, session_id),
+            media_type="text/event-stream"
+        )
     
     except Exception as e:
         print(f"❌ Error during conversation: {e}")
-        response = {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}], "session_id": session_id}
-        print(f"📤 Sending response: {response}")
-        return response
+        return StreamingResponse(
+            stream_response(
+                [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}],
+                session_id
+            ),
+            media_type="text/event-stream"
+        )
 
 async def cleanup_audio(audio_path, delay=300):
     import time
@@ -244,12 +273,11 @@ async def cleanup_audio(audio_path, delay=300):
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
     form = await request.form()
     user_input = Body.strip().lower()
-    media_url = form.get("MediaUrl0")  # Check for media (e.g., voice message)
-    media_content_type = form.get("MediaContentType0")  # Check media type
+    media_url = form.get("MediaUrl0")
+    media_content_type = form.get("MediaContentType0")
 
     print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
 
-    # Check if the user explicitly requests voice or sent a voice message
     voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
     is_voice_request = any(phrase in user_input for phrase in voice_phrases)
     is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
@@ -282,14 +310,10 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-            # Initialize ElevenLabs client
             elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-            
-            # Generate audio with ElevenLabs
             audio_filename = f"{uuid.uuid4()}.mp3"
             audio_path = os.path.join("static/audio", audio_filename)
             
-            # Generate audio bytes
             audio_bytes = elevenlabs_client.text_to_speech.convert(
                 voice_id=ELEVENLABS_VOICE_ID,
                 text=text_reply,
@@ -299,7 +323,6 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 )
             )
             
-            # Save audio to file
             with open(audio_path, "wb") as f:
                 for chunk in audio_bytes:
                     if chunk:
@@ -314,7 +337,6 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             background_tasks.add_task(cleanup_audio, audio_path)
             print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
         else:
-            # Send text response
             message = client.messages.create(
                 body=text_reply,
                 from_=TWILIO_PHONE_NUMBER,
@@ -369,7 +391,6 @@ async def extract_metadata_via_openai(request: Request):
             "details": str(e)
         }
 
-# Voice endpoints
 @app.post("/voice", response_class=Response)
 async def voice():
     twiml = '''<?xml version="1.0" encoding="UTF-8"?>
