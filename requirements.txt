@@ -8,3 +8,4 @@ langdetect
 phonenumbers
 python-multipart
 twilio
+elevenlabs
