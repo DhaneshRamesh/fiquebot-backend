@@ -1,16 +1,20 @@
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import httpx
 import re
 import json
+import uuid
 from dotenv import load_dotenv
 from twilio.rest import Client
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
+import xml.sax.saxutils as saxutils
+from elevenlabs import generate, save
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -24,6 +28,20 @@ AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "whatsapp:+447488880990")
+TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
+
+# ElevenLabs credentials
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "rachel")
+
+# Validate required environment variables
+required_vars = [
+    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
+    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"
+]
+for var in required_vars:
+    if not os.environ.get(var):
+        raise EnvironmentError(f"Missing required environment variable: {var}")
 
 app = FastAPI()
 
@@ -37,6 +55,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static directory for audio files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class Message(BaseModel):
     role: str
@@ -61,7 +82,7 @@ async def conversation_logic(messages, metadata):
             return " ".join(keywords[:5])
         
         keywords = extract_keywords(user_question)
-        search_contexts = search_articles(keywords)
+        search_contexts = search_articles(keywords) or []
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
             "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
@@ -78,8 +99,8 @@ async def conversation_logic(messages, metadata):
         if search_contexts:
             context_block = "\n\n".join([
                 f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
-                for item in search_contexts
-            ]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
+                for item in search_contexts if isinstance(item, dict) and all(k in item for k in ["snippet", "title", "url"])
+            ]) or "\n\n".join([str(item) for item in search_contexts])
             cleaned_messages[-1] = {
                 "role": "user",
                 "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
@@ -96,18 +117,19 @@ async def conversation_logic(messages, metadata):
             "stream": False,
         }
         
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
                 f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
                 headers=headers,
                 json=body
             )
+            response.raise_for_status()
         
         result = response.json()
         return [result["choices"][0]["message"]]
     
     except Exception as e:
-        print("❌ Error in conversation_logic:", str(e))
+        print(f"❌ Error in conversation_logic: {e}")
         import traceback
         traceback.print_exc()
         return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
@@ -119,14 +141,7 @@ async def conversation_endpoint(request: Request):
         messages_data = payload.get("messages", [])
         
         if not messages_data:
-            return {
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"
-                    }]
-                }]
-            }
+            return {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}]}
         
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
@@ -135,7 +150,7 @@ async def conversation_endpoint(request: Request):
         ]
         
         if not valid_messages:
-            return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}]}
+            return {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}
         
         print(f"📜 Conversation length: {len(valid_messages)} messages")
         
@@ -159,173 +174,113 @@ async def conversation_endpoint(request: Request):
         
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
-            return {
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"
-                    }]
-                }]
-            }
+            return {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}]}
         
         if len(valid_messages) < 3:
-            return {
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": (
-                            f"""✅ Got it! Here's what I understood:\n\n"""
-                            f"- Country: {metadata['country']}\n"
-                            f"- Language: {metadata['language']}\n"
-                            f"- Phone: {metadata['phone']}\n\n"
-                            f"📘 Now, what would you like to ask about Fique?"
-                        )
-                    }]
-                }]
-            }
+            return {"messages": [{
+                "role": "assistant",
+                "content": (
+                    f"""✅ Got it! Here's what I understood:\n\n"""
+                    f"- Country: {metadata['country']}\n"
+                    f"- Language: {metadata['language']}\n"
+                    f"- Phone: {metadata['phone']}\n\n"
+                    f"📘 Now, what would you like to ask about Fique?"
+                )
+            }]}
         
-        fallback_phrases = [
-            "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
-            "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
-            "that’s fine", "proceed", "give me an answer", "show me anyway"
-        ]
-        
-        fallback_flag = any(
-            any(phrase in m.content.lower() for phrase in fallback_phrases)
-            for m in valid_messages[-2:]
-        )
-        
-        def extract_keywords(text):
-            words = re.findall(r'\w+', text.lower())
-            stopwords = {"what", "are", "the", "of", "and", "in", "on", "is", "to", "a", "how", "do", "does"}
-            keywords = [w for w in words if w not in stopwords]
-            return " ".join(keywords[:5])
-        
-        keywords = extract_keywords(user_question)
-        search_contexts = search_articles(keywords)
-        
-        if not search_contexts and not fallback_flag:
-            return {
-                "choices": [{
-                    "messages": [{
-                        "role": "assistant",
-                        "content": "🤖 I couldn’t find anything in our articles. Would you like me to try a general answer instead?"
-                    }]
-                }]
-            }
-        
-        if search_contexts:
-            context_block = "\n\n".join([
-                f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
-                for item in search_contexts
-            ]) if isinstance(search_contexts[0], dict) else "\n\n".join(search_contexts)
-            
-            cleaned_messages[-1] = {
-                "role": "user",
-                "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
-            }
-        
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": AZURE_OPENAI_KEY
-        }
-        
-        body = {
-            "messages": cleaned_messages,
-            "temperature": 0.7,
-            "top_p": 0.95,
-            "frequency_penalty": 0,
-            "presence_penalty": 0,
-            "max_tokens": 1000,
-            "stream": False,
-        }
-        
-        async with httpx.AsyncClient(timeout=30) as client:
-            print(f"📞 Making OpenAI call with {len(cleaned_messages)} messages")
-            response = await client.post(
-                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
-                headers=headers,
-                json=body
-            )
-        
-        response.raise_for_status()
-        result = response.json()
-        assistant_message = result["choices"][0]["message"]
-        
-        return {"choices": [{"messages": [assistant_message]}]}
+        result = await conversation_logic(cleaned_messages, metadata)
+        return {"messages": [result[0]]}
     
     except Exception as e:
-        print(f"❌ Error during OpenAI call: {e}")
-        return {"choices": [{"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}]}
+        print(f"❌ Error during conversation: {e}")
+        return {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}
+
+async def cleanup_audio(audio_path, delay=300):
+    import time
+    time.sleep(delay)
+    if os.path.exists(audio_path):
+        os.remove(audio_path)
+        print(f"🗑️ Deleted audio file: {audio_path}")
 
 @app.post("/twilio-webhook")
-async def handle_whatsapp(From: str = Form(...), Body: str = Form(...)):
-    print(f"📩 Received WhatsApp message from {From}: {Body}")
+async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
+    form = await request.form()
     user_input = Body.strip().lower()
-    
-    # Check for reset command
+    media_url = form.get("MediaUrl0")  # Check for media (e.g., voice message)
+    media_content_type = form.get("MediaContentType0")  # Check media type
+
+    print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
+
+    # Check if the user explicitly requests voice or sent a voice message
+    voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
+    is_voice_request = any(phrase in user_input for phrase in voice_phrases)
+    is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
+
     if user_input == "reset":
         if From in conversation_history:
             del conversation_history[From]
             print(f"🔄 Reset conversation history for {From}")
         text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
     else:
-        # Retrieve or initialize conversation history for this user
         if From not in conversation_history:
             conversation_history[From] = []
         
-        # Append the new user message to the history
-        conversation_history[From].append({"role": "user", "content": user_input})
-        
-        # Log the current conversation history length
+        conversation_history[From].append({"role": "user", "content": user_input or "[Voice message]"})
         print(f"📜 Conversation history for {From}: {len(conversation_history[From])} messages")
         
-        # Prepare metadata
         metadata = {"phone": From, "country": "auto", "language": "en"}
-        
         try:
-            # Pass the full conversation history to conversation_logic
             result = await conversation_logic(conversation_history[From], metadata)
             text_reply = result[0]["content"]
-            
-            # Append the assistant's response to the history
             conversation_history[From].append({"role": "assistant", "content": text_reply})
         except Exception as e:
             print(f"❌ Error in twilio-webhook: {e}")
             text_reply = "⚠️ Sorry, something went wrong."
-    
-    # Log the plain message content
-    print(f"📤 Sending message to {From}: {text_reply}")
-    
-    # Validate Twilio credentials
+
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         print(f"❌ Twilio credentials missing: SID={TWILIO_ACCOUNT_SID}, Token={TWILIO_AUTH_TOKEN}")
         return PlainTextResponse("Twilio credentials missing", status_code=500)
     
-    # Send message using Twilio REST API
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        message = client.messages.create(
-            body=text_reply,
-            from_=TWILIO_PHONE_NUMBER,
-            to=From
-        )
-        print(f"✅ Message sent to {From}, SID: {message.sid}")
+        if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            # Generate audio with ElevenLabs
+            audio_filename = f"{uuid.uuid4()}.mp3"
+            audio_path = os.path.join("static/audio", audio_filename)
+            audio = generate(
+                text=text_reply,
+                voice=ELEVENLABS_VOICE_ID,
+                api_key=ELEVENLABS_API_KEY
+            )
+            save(audio, audio_path)
+            audio_url = f"{os.environ.get('RENDER_DOMAIN')}/static/audio/{audio_filename}"
+            message = client.messages.create(
+                media_url=[audio_url],
+                from_=TWILIO_PHONE_NUMBER,
+                to=From
+            )
+            background_tasks.add_task(cleanup_audio, audio_path)
+            print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
+        else:
+            # Send text response
+            message = client.messages.create(
+                body=text_reply,
+                from_=TWILIO_PHONE_NUMBER,
+                to=From
+            )
+            print(f"✅ Text message sent to {From}, SID: {message.sid}")
     except Exception as e:
         print(f"❌ Error sending message via Twilio REST API: {str(e)}")
-        return PlainTextResponse("", status_code=500)  # Return empty response on error
+        return PlainTextResponse("", status_code=500)
     
-    # Return an empty response to Twilio (no content to send to WhatsApp)
     return PlainTextResponse("")
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
     data = await request.json()
     user_input = data.get("text")
-
     if not user_input:
         return {"error": "No text provided."}
-
     openai_body = {
         "messages": [
             {
@@ -341,19 +296,16 @@ async def extract_metadata_via_openai(request: Request):
         "presence_penalty": 0,
         "stream": False,
     }
-
     headers = {
         "Content-Type": "application/json",
         "api-key": AZURE_OPENAI_KEY
     }
-
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
             f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
             headers=headers,
             json=openai_body
         )
-
     try:
         result = response.json()
         reply = result["choices"][0]["message"]["content"]
@@ -364,6 +316,57 @@ async def extract_metadata_via_openai(request: Request):
             "raw": reply,
             "details": str(e)
         }
+
+# Voice endpoints
+@app.post("/voice", response_class=Response)
+async def voice():
+    twiml = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather input="speech" action="/process_speech" method="POST" timeout="5">
+        <Say>Hello, you're now connected to the Fique AI assistant. Please say something after the beep.</Say>
+    </Gather>
+    <Say>Sorry, I didn't catch that. Goodbye!</Say>
+</Response>'''
+    return Response(content=twiml, media_type="application/xml")
+
+@app.post("/process_speech", response_class=Response)
+async def process_speech(request: Request, background_tasks: BackgroundTasks):
+    try:
+        form = await request.form()
+        user_input = form.get("SpeechResult", "").strip()
+        phone = form.get("From", "unknown")
+
+        if not user_input:
+            twiml = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Sorry, I didn't hear anything. Please try again.</Say>
+</Response>'''
+            return Response(content=twiml, media_type="application/xml")
+
+        if phone not in conversation_history:
+            conversation_history[phone] = []
+        conversation_history[phone].append({"role": "user", "content": user_input})
+
+        metadata = {"phone": phone, "country": "auto", "language": "en"}
+        result = await conversation_logic(conversation_history[phone], metadata)
+        reply_text = saxutils.escape(result[0]["content"])
+
+        conversation_history[phone].append({"role": "assistant", "content": reply_text})
+
+        print(f"📞 Voice interaction from {phone}: Input={user_input}, Reply={reply_text}")
+
+        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>{reply_text}</Say>
+</Response>'''
+        return Response(content=twiml, media_type="application/xml")
+    except Exception as e:
+        print(f"❌ Error in process_speech: {e}")
+        twiml = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Sorry, an error occurred. Please try again later.</Say>
+</Response>'''
+        return Response(content=twiml, media_type="application/xml")
 
 if __name__ == "__main__":
     import uvicorn
