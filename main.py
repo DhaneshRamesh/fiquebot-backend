@@ -75,6 +75,7 @@ async def conversation_logic(messages, metadata):
     try:
         cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
         user_question = cleaned_messages[-1]['content']
+        print(f"🧠 Calling OpenAI with messages: {cleaned_messages}")
         
         def extract_keywords(text):
             words = re.findall(r'\w+', text.lower())
@@ -84,6 +85,8 @@ async def conversation_logic(messages, metadata):
         
         keywords = extract_keywords(user_question)
         search_contexts = search_articles(keywords) or []
+        print(f"🔍 Search context: {search_contexts}")
+        
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
             "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
@@ -127,6 +130,12 @@ async def conversation_logic(messages, metadata):
             response.raise_for_status()
         
         result = response.json()
+        print(f"✅ OpenAI response: {result}")
+        
+        if not result or not result.get("choices") or not result["choices"][0].get("message"):
+            print("⚠️ OpenAI response is empty or malformed")
+            return [{"role": "assistant", "content": "⚠️ I couldn’t generate a response."}]
+        
         return [result["choices"][0]["message"]]
     
     except Exception as e:
@@ -140,9 +149,12 @@ async def conversation_endpoint(request: Request):
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
+        print(f"📩 Received payload: {payload}")
         
         if not messages_data:
-            return {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}]}
+            response = {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}]}
+            print(f"📤 Sending response: {response}")
+            return response
         
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
@@ -151,7 +163,9 @@ async def conversation_endpoint(request: Request):
         ]
         
         if not valid_messages:
-            return {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}
+            response = {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}
+            print(f"📤 Sending response: {response}")
+            return response
         
         print(f"📜 Conversation length: {len(valid_messages)} messages")
         
@@ -175,10 +189,12 @@ async def conversation_endpoint(request: Request):
         
         if needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
-            return {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}]}
+            response = {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}]}
+            print(f"📤 Sending response: {response}")
+            return response
         
         if len(valid_messages) < 3:
-            return {"messages": [{
+            response = {"messages": [{
                 "role": "assistant",
                 "content": (
                     f"""✅ Got it! Here's what I understood:\n\n"""
@@ -188,13 +204,19 @@ async def conversation_endpoint(request: Request):
                     f"📘 Now, what would you like to ask about Fique?"
                 )
             }]}
+            print(f"📤 Sending response: {response}")
+            return response
         
         result = await conversation_logic(cleaned_messages, metadata)
-        return {"messages": [result[0]]}
+        response = {"messages": [result[0]]}
+        print(f"📤 Sending response: {response}")
+        return response
     
     except Exception as e:
         print(f"❌ Error during conversation: {e}")
-        return {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}
+        response = {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}
+        print(f"📤 Sending response: {response}")
+        return response
 
 async def cleanup_audio(audio_path, delay=300):
     import time
