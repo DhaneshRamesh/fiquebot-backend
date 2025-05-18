@@ -46,7 +46,7 @@ for var in required_vars:
 
 app = FastAPI()
 
-# In-memory storage for conversation history (key: phone number, value: list of messages)
+# In-memory storage for conversation history (key: phone number or session ID, value: list of messages)
 conversation_history = {}
 
 app.add_middleware(
@@ -66,6 +66,7 @@ class Message(BaseModel):
 
 class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
+    session_id: Optional[str] = None
 
 @app.get("/")
 async def root():
@@ -149,13 +150,15 @@ async def conversation_endpoint(request: Request):
     try:
         payload = await request.json()
         messages_data = payload.get("messages", [])
-        print(f"📩 Received payload: {payload}")
+        session_id = payload.get("session_id", str(uuid.uuid4()))  # Generate session_id if not provided
+        print(f"📩 Received payload: {payload}, Session ID: {session_id}")
         
         if not messages_data:
-            response = {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}]}
+            response = {"messages": [{"role": "assistant", "content": "👋 Welcome! Before we begin, could you please tell me your *country* and *phone number*?"}], "session_id": session_id}
             print(f"📤 Sending response: {response}")
             return response
         
+        # Filter out invalid messages
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
             for msg in messages_data
@@ -163,14 +166,19 @@ async def conversation_endpoint(request: Request):
         ]
         
         if not valid_messages:
-            response = {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}]}
+            response = {"messages": [{"role": "assistant", "content": "⚠️ Invalid message format."}], "session_id": session_id}
             print(f"📤 Sending response: {response}")
             return response
         
-        print(f"📜 Conversation length: {len(valid_messages)} messages")
+        # Initialize or retrieve conversation history for this session
+        if session_id not in conversation_history:
+            conversation_history[session_id] = []
         
-        cleaned_messages = [{"role": m.role, "content": m.content} for m in valid_messages]
-        user_question = valid_messages[-1].content
+        # Add new user message to history
+        latest_user_message = {"role": valid_messages[-1].role, "content": valid_messages[-1].content}
+        conversation_history[session_id].append(latest_user_message)
+        print(f"📜 Conversation history for session {session_id}: {conversation_history[session_id]}")
+        
         all_user_text = " ".join([m.content for m in valid_messages if m.role == "user"])
         metadata = {
             "phone": payload.get("phone"),
@@ -178,6 +186,7 @@ async def conversation_endpoint(request: Request):
             "language": payload.get("language")
         }
         
+        # Extract metadata if missing
         if not metadata["phone"] or not metadata["country"]:
             async with httpx.AsyncClient(timeout=10) as client:
                 meta_response = await client.post(
@@ -186,14 +195,17 @@ async def conversation_endpoint(request: Request):
                 )
             if meta_response.status_code == 200:
                 metadata = meta_response.json()
+                print(f"📋 Extracted metadata: {metadata}")
         
-        if needs_form(metadata):
+        # Ask for metadata only on the first message if incomplete
+        if len(conversation_history[session_id]) == 1 and needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
-            response = {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}]}
+            response = {"messages": [{"role": "assistant", "content": f"⚠️ I need more info to help you: missing {', '.join(missing_fields)}. Could you please provide it?"}], "session_id": session_id}
             print(f"📤 Sending response: {response}")
             return response
         
-        if len(valid_messages) < 3:
+        # Confirm metadata on the second message if provided
+        if len(conversation_history[session_id]) == 2 and (metadata["phone"] and metadata["country"]):
             response = {"messages": [{
                 "role": "assistant",
                 "content": (
@@ -203,18 +215,21 @@ async def conversation_endpoint(request: Request):
                     f"- Phone: {metadata['phone']}\n\n"
                     f"📘 Now, what would you like to ask about Fique?"
                 )
-            }]}
+            }], "session_id": session_id}
+            conversation_history[session_id].append({"role": "assistant", "content": response["messages"][0]["content"]})
             print(f"📤 Sending response: {response}")
             return response
         
-        result = await conversation_logic(cleaned_messages, metadata)
-        response = {"messages": [result[0]]}
+        # Proceed to conversation logic for subsequent messages
+        result = await conversation_logic(conversation_history[session_id], metadata)
+        response = {"messages": [result[0]], "session_id": session_id}
+        conversation_history[session_id].append({"role": "assistant", "content": result[0]["content"]})
         print(f"📤 Sending response: {response}")
         return response
     
     except Exception as e:
         print(f"❌ Error during conversation: {e}")
-        response = {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]}
+        response = {"messages": [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}], "session_id": session_id}
         print(f"📤 Sending response: {response}")
         return response
 
