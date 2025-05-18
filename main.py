@@ -14,7 +14,8 @@ from twilio.rest import Client
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
-from elevenlabs import generate, save
+from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -244,15 +245,29 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            # Initialize ElevenLabs client
+            elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            
             # Generate audio with ElevenLabs
             audio_filename = f"{uuid.uuid4()}.mp3"
             audio_path = os.path.join("static/audio", audio_filename)
-            audio = generate(
+            
+            # Generate audio bytes
+            audio_bytes = elevenlabs_client.text_to_speech.convert(
+                voice_id=ELEVENLABS_VOICE_ID,
                 text=text_reply,
-                voice=ELEVENLABS_VOICE_ID,
-                api_key=ELEVENLABS_API_KEY
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.5
+                )
             )
-            save(audio, audio_path)
+            
+            # Save audio to file
+            with open(audio_path, "wb") as f:
+                for chunk in audio_bytes:
+                    if chunk:
+                        f.write(chunk)
+            
             audio_url = f"{os.environ.get('RENDER_DOMAIN')}/static/audio/{audio_filename}"
             message = client.messages.create(
                 media_url=[audio_url],
