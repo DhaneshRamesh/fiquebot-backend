@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request, Form, BackgroundTasks
+from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -248,12 +248,21 @@ async def conversation_endpoint(request: Request):
             media_type="text/event-stream"
         )
 
-async def cleanup_audio(audio_path, delay=300):  # Reduced delay for faster cleanup
+async def cleanup_audio(audio_path, delay=300):
     import time
     time.sleep(delay)
     if os.path.exists(audio_path):
         os.remove(audio_path)
         print(f"🗑️ Deleted audio file: {audio_path}")
+
+@app.get("/audio/{filename}")
+async def serve_audio(filename: str):
+    audio_path = os.path.join("static/audio", filename)
+    if not os.path.exists(audio_path):
+        print(f"❌ Audio file not found: {audio_path}")
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    print(f"🎵 Serving audio file: {audio_path}")
+    return FileResponse(audio_path, media_type="audio/mpeg")
 
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
@@ -299,8 +308,10 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             text_reply = text_reply[:150]  # Limit for memory optimization
             try:
                 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+                audio_dir = "static/audio"
+                os.makedirs(audio_dir, exist_ok=True)  # Ensure directory exists
                 audio_filename = f"{uuid.uuid4()}.mp3"
-                audio_path = os.path.join("static/audio", audio_filename)
+                audio_path = os.path.join(audio_dir, audio_filename)
                 
                 audio_bytes = elevenlabs_client.text_to_speech.convert(
                     voice_id=ELEVENLABS_VOICE_ID,
@@ -308,7 +319,8 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     voice_settings=VoiceSettings(
                         stability=0.5,
                         similarity_boost=0.5
-                    )
+                    ),
+                    output_format="mp3_44100_128"
                 )
                 
                 with open(audio_path, "wb") as f:
@@ -316,7 +328,21 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                         if chunk:
                             f.write(chunk)
                 
-                audio_url = f"{os.environ.get('RENDER_DOMAIN')}/static/audio/{audio_filename}"
+                # Check file size (WhatsApp max: 16MB)
+                file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+                print(f"📏 Audio file size: {file_size_mb:.2f} MB")
+                if file_size_mb > 16:
+                    raise Exception("Audio file exceeds WhatsApp 16MB limit")
+                
+                # Use a default domain if RENDER_DOMAIN is not set
+                render_domain = os.environ.get('RENDER_DOMAIN', 'https://fiquebot-backend.onrender.com')
+                print(f"🌐 Using RENDER_DOMAIN: {render_domain}")
+                audio_url = f"{render_domain}/audio/{audio_filename}"
+                
+                # Verify the file is accessible
+                if not os.path.exists(audio_path):
+                    raise Exception("Audio file not found after creation")
+                
                 message = client.messages.create(
                     media_url=[audio_url],
                     from_=TWILIO_PHONE_NUMBER,
