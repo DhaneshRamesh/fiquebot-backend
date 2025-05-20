@@ -18,7 +18,7 @@ from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
-from azure.storage.blob import BlobServiceClient, ContentSettings  # Added ContentSettings import
+from azure.storage.blob import BlobServiceClient, ContentSettings
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -471,7 +471,7 @@ async def extract_metadata_via_openai(request: Request):
     try:
         result = response.json()
         reply = result["choices"][0]["message"]["content"]
-        return json.loads.reply)
+        return json.loads(reply)
     except Exception as e:
         return {
             "error": "Failed to parse OpenAI response.",
