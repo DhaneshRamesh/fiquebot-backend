@@ -9,6 +9,7 @@ import httpx
 import re
 import json
 import uuid
+import time
 from dotenv import load_dotenv
 from twilio.rest import Client
 from azure_search import search_articles
@@ -257,12 +258,16 @@ async def cleanup_audio(audio_path, delay=300):
 
 @app.get("/audio/{filename}")
 async def serve_audio(filename: str):
+    start_time = time.time()
     audio_path = os.path.join("static/audio", filename)
     if not os.path.exists(audio_path):
         print(f"❌ Audio file not found: {audio_path}")
         raise HTTPException(status_code=404, detail="Audio file not found")
     print(f"🎵 Serving audio file: {audio_path}")
-    return FileResponse(audio_path, media_type="audio/mpeg")
+    response = FileResponse(audio_path, media_type="audio/mpeg")
+    end_time = time.time()
+    print(f"⏱️ Audio serving took {end_time - start_time:.2f} seconds")
+    return response
 
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
@@ -348,8 +353,20 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     from_=TWILIO_PHONE_NUMBER,
                     to=From
                 )
-                background_tasks.add_task(cleanup_audio, audio_path)
-                print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
+                # Check message status after sending
+                updated_message = client.messages(message.sid).fetch()
+                print(f"📤 Audio message status: {updated_message.status}, SID: {message.sid}, URL: {audio_url}")
+                if updated_message.status in ["failed", "undelivered"]:
+                    print(f"❌ Audio delivery failed with error: {updated_message.error_code} - {updated_message.error_message}")
+                    message = client.messages.create(
+                        body=text_reply,
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=From
+                    )
+                    print(f"✅ Fallback text message sent to {From}, SID: {message.sid}")
+                else:
+                    background_tasks.add_task(cleanup_audio, audio_path)
+                    print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
             except Exception as e:
                 print(f"❌ Error generating audio with ElevenLabs: {e}")
                 message = client.messages.create(
