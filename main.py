@@ -248,7 +248,7 @@ async def conversation_endpoint(request: Request):
             media_type="text/event-stream"
         )
 
-async def cleanup_audio(audio_path, delay=60):  # Reduced delay for faster cleanup
+async def cleanup_audio(audio_path, delay=300):  # Reduced delay for faster cleanup
     import time
     time.sleep(delay)
     if os.path.exists(audio_path):
