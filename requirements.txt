@@ -9,3 +9,4 @@ phonenumbers
 python-multipart
 twilio
 elevenlabs
+azure-storage-blob
