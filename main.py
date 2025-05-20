@@ -278,7 +278,7 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     async with httpx.AsyncClient(timeout=30) as client:
         with open(audio_path, "rb") as f:
             response = await client.post(
-                "https://file.io",
+                "https://www.file.io/",
                 files={"file": (audio_filename, f, "audio/mpeg")}
             )
         response.raise_for_status()
