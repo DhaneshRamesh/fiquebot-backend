@@ -82,6 +82,8 @@ async def conversation_logic(messages, metadata):
         
         keywords = extract_keywords(user_question)
         search_contexts = search_articles(keywords) or []
+        print(f"🔍 Search query: {keywords}")
+        print(f"📄 Articles returned: {len(search_contexts)}")
         print(f"🔍 Search context: {search_contexts}")
         
         fallback_phrases = [
@@ -275,14 +277,21 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     file.io provides temporary links that expire after one download (perfect for Twilio).
     """
     start_time = time.time()
-    async with httpx.AsyncClient(timeout=30) as client:
-        with open(audio_path, "rb") as f:
-            response = await client.post(
-                "https://www.file.io/",
-                files={"file": (audio_filename, f, "audio/mpeg")}
-            )
-        response.raise_for_status()
-        public_url = response.json()["link"]
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            with open(audio_path, "rb") as f:
+                response = await client.post(
+                    "https://file.io",
+                    files={"file": (audio_filename, f, "audio/mpeg")}
+                )
+            response.raise_for_status()
+            result = response.json()
+            if not result.get("success") or not result.get("link"):
+                raise ValueError(f"file.io upload failed: {result}")
+            public_url = result["link"]
+    except Exception as e:
+        print(f"❌ file.io upload error: {str(e)}")
+        raise
     end_time = time.time()
     print(f"📤 Uploaded {audio_path} to file.io in {end_time - start_time:.2f} seconds")
     print(f"✅ Public URL: {public_url}")
