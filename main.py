@@ -102,17 +102,25 @@ async def conversation_logic(messages, metadata):
         )
         
         if not search_contexts and not fallback_flag:
-            return [{"role": "assistant", "content": "🤖 I couldn’t find anything in our articles. Would you like me to try a general answer instead?"}]
+            return [{"role": "assistant", "content": "🤖 I couldn’t find anything in our articles. Would you like to try a general answer instead?"}]
         
-        if search_contexts:
-            context_block = "\n\n".join([
-                f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
-                for item in search_contexts if isinstance(item, dict) and all(k in item for k in ["snippet", "title", "url"])
-            ]) or "\n\n".join([str(item) for item in search_contexts])
-            cleaned_messages[-1] = {
-                "role": "user",
-                "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
-            }
+        # Handle generic queries even without search results if fallback_flag is True
+        if fallback_flag or search_contexts:
+            if search_contexts:
+                context_block = "\n\n".join([
+                    f"{item['snippet']}\n\nSource: {item['title']} ({item['url']})"
+                    for item in search_contexts if isinstance(item, dict) and all(k in item for k in ["snippet", "title", "url"])
+                ]) or "\n\n".join([str(item) for item in search_contexts])
+                cleaned_messages[-1] = {
+                    "role": "user",
+                    "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
+                }
+            else:
+                # For generic queries like "hi how are you" when fallback_flag is True
+                cleaned_messages[-1] = {
+                    "role": "user",
+                    "content": f"Answer the following question in a friendly, conversational tone: {user_question}"
+                }
         
         headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
         body = {
@@ -121,7 +129,7 @@ async def conversation_logic(messages, metadata):
             "top_p": 0.95,
             "frequency_penalty": 0,
             "presence_penalty": 0,
-            "max_tokens": 500,  # Reduced for memory optimization
+            "max_tokens": 500,
             "stream": False,
         }
         
@@ -143,7 +151,7 @@ async def conversation_logic(messages, metadata):
         return [result["choices"][0]["message"]]
     
     except Exception as e:
-        print(f"❌ Error in conversation_logic: {e}")
+        print(f"❌ Error in conversation_logic: {str(e)}")
         import traceback
         traceback.print_exc()
         return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
@@ -343,7 +351,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             conversation_history[From] = []
         
         conversation_history[From].append({"role": "user", "content": user_input or "[Voice message]"})
-        print(f"📜 Conversation history for {From}: {len(conversation_history[From])} messages")
+        print(f"📜 Full conversation history for {From}: {conversation_history[From]}")
         
         metadata = {"phone": From, "country": "auto", "language": "en"}
         try:
@@ -452,7 +460,7 @@ async def extract_metadata_via_openai(request: Request):
             {"role": "user", "content": user_input}
         ],
         "temperature": 0,
-        "max_tokens": 100,  # Reduced for memory optimization
+        "max_tokens": 100,
         "top_p": 1,
         "frequency_penalty": 0,
         "presence_penalty": 0,
