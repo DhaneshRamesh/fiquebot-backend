@@ -25,17 +25,14 @@ AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
 
-# Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "whatsapp:+447488880990")
 TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
 
-# ElevenLabs credentials
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "rachel")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
-# Validate required environment variables
 required_vars = [
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"
@@ -46,7 +43,6 @@ for var in required_vars:
 
 app = FastAPI()
 
-# In-memory storage for conversation history (key: phone number or session ID, value: list of messages)
 conversation_history = {}
 
 app.add_middleware(
@@ -57,7 +53,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static directory for audio files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class Message(BaseModel):
@@ -118,7 +113,7 @@ async def conversation_logic(messages, metadata):
             "top_p": 0.95,
             "frequency_penalty": 0,
             "presence_penalty": 0,
-            "max_tokens": 1000,
+            "max_tokens": 500,  # Reduced for memory optimization
             "stream": False,
         }
         
@@ -146,12 +141,10 @@ async def conversation_logic(messages, metadata):
         return [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}]
 
 async def stream_response(messages, session_id):
-    # Simulate streaming by sending the response as newline-separated JSON objects
     response_data = {
         "choices": [{"messages": messages}],
         "session_id": session_id
     }
-    # Send the response as a single chunk followed by an empty line to signal end
     yield json.dumps(response_data) + "\n"
     yield "\n"
 
@@ -172,7 +165,6 @@ async def conversation_endpoint(request: Request):
                 media_type="text/event-stream"
             )
         
-        # Filter out invalid messages
         valid_messages = [
             Message(role=msg["role"], content=msg["content"])
             for msg in messages_data
@@ -188,11 +180,9 @@ async def conversation_endpoint(request: Request):
                 media_type="text/event-stream"
             )
         
-        # Initialize or retrieve conversation history for this session
         if session_id not in conversation_history:
             conversation_history[session_id] = []
         
-        # Add new user message to history
         latest_user_message = {"role": valid_messages[-1].role, "content": valid_messages[-1].content}
         conversation_history[session_id].append(latest_user_message)
         print(f"📜 Conversation history for session {session_id}: {conversation_history[session_id]}")
@@ -204,7 +194,6 @@ async def conversation_endpoint(request: Request):
             "language": payload.get("language")
         }
         
-        # Extract metadata if missing
         if not metadata["phone"] or not metadata["country"]:
             async with httpx.AsyncClient(timeout=10) as client:
                 meta_response = await client.post(
@@ -215,7 +204,6 @@ async def conversation_endpoint(request: Request):
                 metadata = meta_response.json()
                 print(f"📋 Extracted metadata: {metadata}")
         
-        # Ask for metadata only on the first message if incomplete
         if len(conversation_history[session_id]) == 1 and needs_form(metadata):
             missing_fields = [k for k, v in metadata.items() if v is None]
             return StreamingResponse(
@@ -226,7 +214,6 @@ async def conversation_endpoint(request: Request):
                 media_type="text/event-stream"
             )
         
-        # Confirm metadata on the second message if provided
         if len(conversation_history[session_id]) == 2 and (metadata["phone"] and metadata["country"]):
             response_message = {
                 "role": "assistant",
@@ -244,7 +231,6 @@ async def conversation_endpoint(request: Request):
                 media_type="text/event-stream"
             )
         
-        # Proceed to conversation logic for subsequent messages
         result = await conversation_logic(conversation_history[session_id], metadata)
         conversation_history[session_id].append({"role": "assistant", "content": result[0]["content"]})
         return StreamingResponse(
@@ -310,6 +296,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
     try:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            text_reply = text_reply[:150]  # Limit for memory optimization
             elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
             audio_filename = f"{uuid.uuid4()}.mp3"
             audio_path = os.path.join("static/audio", audio_filename)
@@ -364,7 +351,7 @@ async def extract_metadata_via_openai(request: Request):
             {"role": "user", "content": user_input}
         ],
         "temperature": 0,
-        "max_tokens": 200,
+        "max_tokens": 100,  # Reduced for memory optimization
         "top_p": 1,
         "frequency_penalty": 0,
         "presence_penalty": 0,
