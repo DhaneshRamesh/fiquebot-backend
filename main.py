@@ -34,9 +34,13 @@ TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
+VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
+VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID")
+
 required_vars = [
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
-    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"
+    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
+    "VERCEL_TOKEN", "VERCEL_PROJECT_ID"
 ]
 for var in required_vars:
     if not os.environ.get(var):
@@ -273,27 +277,42 @@ async def serve_audio(filename: str):
 
 async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     """
-    Uploads the audio file to transfer.sh and returns a public URL.
-    transfer.sh keeps files for 14 days and is more reliable than file.io.
+    Uploads the audio file to Vercel Blob and returns a public URL.
+    Vercel Blob provides fast, simple file storage with global access.
     """
     start_time = time.time()
     try:
+        # Vercel Blob API endpoint for upload
+        upload_url = f"https://api.vercel.com/v1/blob/files?projectId={VERCEL_PROJECT_ID}"
+        headers = {
+            "Authorization": f"Bearer {VERCEL_TOKEN}",
+            "Content-Type": "audio/mpeg"
+        }
+
+        # Read the audio file
+        with open(audio_path, "rb") as f:
+            audio_content = f.read()
+
+        # Upload the file to Vercel Blob
         async with httpx.AsyncClient(timeout=30) as client:
-            with open(audio_path, "rb") as f:
-                response = await client.put(
-                    f"https://transfer.sh/{audio_filename}",
-                    content=f,
-                    headers={"Content-Type": "audio/mpeg"}
-                )
+            response = await client.put(
+                upload_url,
+                headers=headers,
+                content=audio_content,
+                params={"filename": audio_filename}
+            )
             response.raise_for_status()
-            public_url = response.text.strip()
-            if not public_url.startswith("https://transfer.sh/"):
-                raise ValueError(f"transfer.sh upload failed, invalid URL: {public_url}")
+            result = response.json()
+
+            if "url" not in result:
+                raise ValueError(f"Vercel Blob upload failed: {result}")
+
+            public_url = result["url"]
     except Exception as e:
-        print(f"❌ transfer.sh upload error: {str(e)}")
+        print(f"❌ Vercel Blob upload error: {str(e)}")
         raise
     end_time = time.time()
-    print(f"📤 Uploaded {audio_path} to transfer.sh in {end_time - start_time:.2f} seconds")
+    print(f"📤 Uploaded {audio_path} to Vercel Blob in {end_time - start_time:.2f} seconds")
     print(f"✅ Public URL: {public_url}")
     return public_url
 
@@ -367,7 +386,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 if file_size_mb > 16:
                     raise Exception("Audio file exceeds WhatsApp 16MB limit")
                 
-                # Upload to transfer.sh instead of serving from Render
+                # Upload to Vercel Blob instead of serving from Render
                 audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
                 # Verify the file is accessible locally before sending
