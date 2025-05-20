@@ -273,27 +273,27 @@ async def serve_audio(filename: str):
 
 async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     """
-    Uploads the audio file to file.io and returns a public URL.
-    file.io provides temporary links that expire after one download (perfect for Twilio).
+    Uploads the audio file to transfer.sh and returns a public URL.
+    transfer.sh keeps files for 14 days and is more reliable than file.io.
     """
     start_time = time.time()
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             with open(audio_path, "rb") as f:
-                response = await client.post(
-                    "https://file.io",
-                    files={"file": (audio_filename, f, "audio/mpeg")}
+                response = await client.put(
+                    f"https://transfer.sh/{audio_filename}",
+                    content=f,
+                    headers={"Content-Type": "audio/mpeg"}
                 )
             response.raise_for_status()
-            result = response.json()
-            if not result.get("success") or not result.get("link"):
-                raise ValueError(f"file.io upload failed: {result}")
-            public_url = result["link"]
+            public_url = response.text.strip()
+            if not public_url.startswith("https://transfer.sh/"):
+                raise ValueError(f"transfer.sh upload failed, invalid URL: {public_url}")
     except Exception as e:
-        print(f"❌ file.io upload error: {str(e)}")
+        print(f"❌ transfer.sh upload error: {str(e)}")
         raise
     end_time = time.time()
-    print(f"📤 Uploaded {audio_path} to file.io in {end_time - start_time:.2f} seconds")
+    print(f"📤 Uploaded {audio_path} to transfer.sh in {end_time - start_time:.2f} seconds")
     print(f"✅ Public URL: {public_url}")
     return public_url
 
@@ -367,7 +367,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 if file_size_mb > 16:
                     raise Exception("Audio file exceeds WhatsApp 16MB limit")
                 
-                # Upload to file.io instead of serving from Render
+                # Upload to transfer.sh instead of serving from Render
                 audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
                 # Verify the file is accessible locally before sending
