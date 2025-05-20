@@ -248,7 +248,7 @@ async def conversation_endpoint(request: Request):
             media_type="text/event-stream"
         )
 
-async def cleanup_audio(audio_path, delay=300):
+async def cleanup_audio(audio_path, delay=60):  # Reduced delay for faster cleanup
     import time
     time.sleep(delay)
     if os.path.exists(audio_path):
@@ -297,32 +297,41 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
             text_reply = text_reply[:150]  # Limit for memory optimization
-            elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-            audio_filename = f"{uuid.uuid4()}.mp3"
-            audio_path = os.path.join("static/audio", audio_filename)
-            
-            audio_bytes = elevenlabs_client.text_to_speech.convert(
-                voice_id=ELEVENLABS_VOICE_ID,
-                text=text_reply,
-                voice_settings=VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.5
+            try:
+                elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+                audio_filename = f"{uuid.uuid4()}.mp3"
+                audio_path = os.path.join("static/audio", audio_filename)
+                
+                audio_bytes = elevenlabs_client.text_to_speech.convert(
+                    voice_id=ELEVENLABS_VOICE_ID,
+                    text=text_reply,
+                    voice_settings=VoiceSettings(
+                        stability=0.5,
+                        similarity_boost=0.5
+                    )
                 )
-            )
-            
-            with open(audio_path, "wb") as f:
-                for chunk in audio_bytes:
-                    if chunk:
-                        f.write(chunk)
-            
-            audio_url = f"{os.environ.get('RENDER_DOMAIN')}/static/audio/{audio_filename}"
-            message = client.messages.create(
-                media_url=[audio_url],
-                from_=TWILIO_PHONE_NUMBER,
-                to=From
-            )
-            background_tasks.add_task(cleanup_audio, audio_path)
-            print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
+                
+                with open(audio_path, "wb") as f:
+                    for chunk in audio_bytes:
+                        if chunk:
+                            f.write(chunk)
+                
+                audio_url = f"{os.environ.get('RENDER_DOMAIN')}/static/audio/{audio_filename}"
+                message = client.messages.create(
+                    media_url=[audio_url],
+                    from_=TWILIO_PHONE_NUMBER,
+                    to=From
+                )
+                background_tasks.add_task(cleanup_audio, audio_path)
+                print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
+            except Exception as e:
+                print(f"❌ Error generating audio with ElevenLabs: {e}")
+                message = client.messages.create(
+                    body=text_reply,
+                    from_=TWILIO_PHONE_NUMBER,
+                    to=From
+                )
+                print(f"✅ Fallback text message sent to {From}, SID: {message.sid}")
         else:
             message = client.messages.create(
                 body=text_reply,
