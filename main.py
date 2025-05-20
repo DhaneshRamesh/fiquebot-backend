@@ -269,6 +269,25 @@ async def serve_audio(filename: str):
     print(f"⏱️ Audio serving took {end_time - start_time:.2f} seconds")
     return response
 
+async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
+    """
+    Uploads the audio file to file.io and returns a public URL.
+    file.io provides temporary links that expire after one download (perfect for Twilio).
+    """
+    start_time = time.time()
+    async with httpx.AsyncClient(timeout=30) as client:
+        with open(audio_path, "rb") as f:
+            response = await client.post(
+                "https://file.io",
+                files={"file": (audio_filename, f, "audio/mpeg")}
+            )
+        response.raise_for_status()
+        public_url = response.json()["link"]
+    end_time = time.time()
+    print(f"📤 Uploaded {audio_path} to file.io in {end_time - start_time:.2f} seconds")
+    print(f"✅ Public URL: {public_url}")
+    return public_url
+
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
     form = await request.form()
@@ -339,12 +358,10 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 if file_size_mb > 16:
                     raise Exception("Audio file exceeds WhatsApp 16MB limit")
                 
-                # Use a default domain if RENDER_DOMAIN is not set
-                render_domain = os.environ.get('RENDER_DOMAIN', 'https://fiquebot-backend.onrender.com')
-                print(f"🌐 Using RENDER_DOMAIN: {render_domain}")
-                audio_url = f"{render_domain}/audio/{audio_filename}"
+                # Upload to file.io instead of serving from Render
+                audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
-                # Verify the file is accessible
+                # Verify the file is accessible locally before sending
                 if not os.path.exists(audio_path):
                     raise Exception("Audio file not found after creation")
                 
