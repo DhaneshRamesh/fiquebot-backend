@@ -10,6 +10,7 @@ import re
 import json
 import uuid
 import time
+import asyncio  # Add this import for asyncio.to_thread
 from dotenv import load_dotenv
 from twilio.rest import Client
 from azure_search import search_articles
@@ -290,9 +291,9 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
         # Get a blob client
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
 
-        # Upload the file
+        # Upload the file (run synchronous operation in a thread)
         with open(audio_path, "rb") as f:
-            await blob_client.upload_blob(f, overwrite=True)
+            await asyncio.to_thread(blob_client.upload_blob, f, overwrite=True)
 
         # Construct the public URL
         public_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_name}"
