@@ -17,6 +17,7 @@ from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
+from azure.storage.blob import BlobServiceClient
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -34,13 +35,12 @@ TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
-VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
-VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID")
+AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 
 required_vars = [
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
-    "VERCEL_TOKEN", "VERCEL_PROJECT_ID"
+    "AZURE_STORAGE_CONNECTION_STRING"
 ]
 for var in required_vars:
     if not os.environ.get(var):
@@ -277,42 +277,34 @@ async def serve_audio(filename: str):
 
 async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     """
-    Uploads the audio file to Vercel Blob and returns a public URL.
-    Vercel Blob provides fast, simple file storage with global access.
+    Uploads the audio file to Azure Blob Storage and returns a public URL.
+    Files are stored in the 'audio-files' container with public read access.
     """
     start_time = time.time()
     try:
-        # Vercel Blob API endpoint for upload
-        upload_url = f"https://api.vercel.com/v1/blob/files?projectId={VERCEL_PROJECT_ID}"
-        headers = {
-            "Authorization": f"Bearer {VERCEL_TOKEN}",
-            "Content-Type": "audio/mpeg"
-        }
+        # Initialize the BlobServiceClient
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+        container_name = "audio-files"
+        blob_name = audio_filename
 
-        # Read the audio file
+        # Get a blob client
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+
+        # Upload the file
         with open(audio_path, "rb") as f:
-            audio_content = f.read()
+            await blob_client.upload_blob(f, overwrite=True)
 
-        # Upload the file to Vercel Blob
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(
-                upload_url,
-                headers=headers,
-                content=audio_content,
-                params={"filename": audio_filename}
-            )
-            response.raise_for_status()
-            result = response.json()
-
-            if "url" not in result:
-                raise ValueError(f"Vercel Blob upload failed: {result}")
-
-            public_url = result["url"]
+        # Construct the public URL
+        public_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_name}"
     except Exception as e:
-        print(f"❌ Vercel Blob upload error: {str(e)}")
+        print(f"❌ Azure Blob Storage upload error: {str(e)}")
         raise
+    finally:
+        # Close the BlobServiceClient to free resources
+        blob_service_client.close()
+
     end_time = time.time()
-    print(f"📤 Uploaded {audio_path} to Vercel Blob in {end_time - start_time:.2f} seconds")
+    print(f"📤 Uploaded {audio_path} to Azure Blob Storage in {end_time - start_time:.2f} seconds")
     print(f"✅ Public URL: {public_url}")
     return public_url
 
@@ -386,7 +378,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 if file_size_mb > 16:
                     raise Exception("Audio file exceeds WhatsApp 16MB limit")
                 
-                # Upload to Vercel Blob instead of serving from Render
+                # Upload to Azure Blob Storage instead of serving from Render
                 audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
                 # Verify the file is accessible locally before sending
