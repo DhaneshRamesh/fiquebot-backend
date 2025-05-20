@@ -10,7 +10,7 @@ import re
 import json
 import uuid
 import time
-import asyncio  # Add this import for asyncio.to_thread
+import asyncio
 from dotenv import load_dotenv
 from twilio.rest import Client
 from azure_search import search_articles
@@ -18,7 +18,7 @@ from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, ContentSettings  # Added ContentSettings import
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -291,12 +291,23 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
         # Get a blob client
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
 
-        # Upload the file (run synchronous operation in a thread)
+        # Set Content-Type to audio/mpeg
+        content_settings = ContentSettings(content_type="audio/mpeg")
+
+        # Upload the file with the correct Content-Type
         with open(audio_path, "rb") as f:
-            await asyncio.to_thread(blob_client.upload_blob, f, overwrite=True)
+            await asyncio.to_thread(blob_client.upload_blob, f, overwrite=True, content_settings=content_settings)
 
         # Construct the public URL
         public_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_name}"
+
+        # Verify the URL is accessible
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.head(public_url)
+            if response.status_code != 200:
+                print(f"❌ Blob URL is not accessible: {response.status_code}")
+                raise Exception(f"Uploaded audio is not publicly accessible: {response.status_code}")
+
     except Exception as e:
         print(f"❌ Azure Blob Storage upload error: {str(e)}")
         raise
@@ -460,7 +471,7 @@ async def extract_metadata_via_openai(request: Request):
     try:
         result = response.json()
         reply = result["choices"][0]["message"]["content"]
-        return json.loads(reply)
+        return json.loads.reply)
     except Exception as e:
         return {
             "error": "Failed to parse OpenAI response.",
