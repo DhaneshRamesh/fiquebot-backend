@@ -78,12 +78,15 @@ async def transcribe_audio(audio_url: str) -> str:
     """
     Transcribe audio from the given URL using Azure OpenAI Whisper.
     """
+    print(f"🎙️ Starting transcription for audio URL: {audio_url}")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             # Download the audio file
+            print(f"📥 Downloading audio from {audio_url}")
             response = await client.get(audio_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
             response.raise_for_status()
             audio_content = response.content
+            print(f"✅ Audio downloaded successfully, size: {len(audio_content)} bytes")
 
             # Send to Azure OpenAI Whisper endpoint
             headers = {
@@ -96,6 +99,7 @@ async def transcribe_audio(audio_url: str) -> str:
             data = {
                 "model": AZURE_WHISPER_MODEL
             }
+            print(f"📤 Sending audio to Whisper model: {AZURE_WHISPER_MODEL}")
             response = await client.post(
                 f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_WHISPER_MODEL}/audio/transcriptions?api-version={AZURE_OPENAI_API_VERSION}",
                 headers={"api-key": AZURE_OPENAI_KEY},
@@ -104,7 +108,7 @@ async def transcribe_audio(audio_url: str) -> str:
             )
             response.raise_for_status()
             result = response.json()
-            print(f"🎙️ Transcription result: {result}")
+            print(f"🎙️ Full transcription response: {result}")
             return result.get("text", "")
     except Exception as e:
         print(f"❌ Error transcribing audio: {str(e)}")
@@ -373,6 +377,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
 
         if is_voice_message and media_url:
+            print(f"🎙️ Initiating transcription for voice message")
             transcribed_text = await transcribe_audio(media_url)
             user_input = transcribed_text.strip().lower() if transcribed_text else "[Voice message]"
             print(f"🎙️ Transcribed voice message: {user_input}")
