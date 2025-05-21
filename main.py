@@ -80,10 +80,12 @@ async def transcribe_audio(audio_url: str) -> str:
     """
     print(f"🎙️ Starting transcription for audio URL: {audio_url}")
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             # Download the audio file
             print(f"📥 Downloading audio from {audio_url}")
             response = await client.get(audio_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+            if response.is_redirect:
+                print(f"🔄 Redirected to: {response.headers.get('location')}")
             response.raise_for_status()
             audio_content = response.content
             print(f"✅ Audio downloaded successfully, size: {len(audio_content)} bytes")
