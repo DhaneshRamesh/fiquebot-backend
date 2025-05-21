@@ -27,6 +27,7 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_PREVIEW_API_VERSION", "2024-05-01-preview")
+AZURE_WHISPER_MODEL = os.environ.get("AZURE_WHISPER_MODEL", "whisper-1")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -73,6 +74,42 @@ class ConversationRequest(BaseModel):
 async def root():
     return {"message": "Backend online!"}
 
+async def transcribe_audio(audio_url: str) -> str:
+    """
+    Transcribe audio from the given URL using Azure OpenAI Whisper.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Download the audio file
+            response = await client.get(audio_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+            response.raise_for_status()
+            audio_content = response.content
+
+            # Send to Azure OpenAI Whisper endpoint
+            headers = {
+                "Content-Type": "multipart/form-data",
+                "api-key": AZURE_OPENAI_KEY
+            }
+            files = {
+                "file": ("audio.mp3", audio_content, "audio/mpeg")
+            }
+            data = {
+                "model": AZURE_WHISPER_MODEL
+            }
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_WHISPER_MODEL}/audio/transcriptions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers={"api-key": AZURE_OPENAI_KEY},
+                files=files,
+                data=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            print(f"🎙️ Transcription result: {result}")
+            return result.get("text", "")
+    except Exception as e:
+        print(f"❌ Error transcribing audio: {str(e)}")
+        return ""
+
 async def conversation_logic(messages, metadata):
     try:
         cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
@@ -81,9 +118,9 @@ async def conversation_logic(messages, metadata):
         
         def extract_keywords(text):
             words = re.findall(r'\w+', text.lower())
-            stopwords = {"what", "are", "the", "of", "and", "in", "on", "is", "to", "a", "how", "do", "does"}
+            stopwords = {"the", "of", "and", "in", "on", "is", "to", "a"}
             keywords = [w for w in words if w not in stopwords]
-            return " ".join(keywords[:5])
+            return " ".join(keywords[:10])
         
         keywords = extract_keywords(user_question)
         search_contexts = search_articles(keywords) or []
@@ -104,7 +141,6 @@ async def conversation_logic(messages, metadata):
         if not search_contexts and not fallback_flag:
             return [{"role": "assistant", "content": "🤖 I couldn’t find anything in our articles. Would you like to try a general answer instead?"}]
         
-        # Handle generic queries even without search results if fallback_flag is True
         if fallback_flag or search_contexts:
             if search_contexts:
                 context_block = "\n\n".join([
@@ -116,7 +152,6 @@ async def conversation_logic(messages, metadata):
                     "content": f"""Use the following context to answer the question. Cite the article title and URL explicitly.\n\nContext:\n{context_block}\n\nQuestion:\n{user_question}"""
                 }
             else:
-                # For generic queries like "hi how are you" when fallback_flag is True
                 cleaned_messages[-1] = {
                     "role": "user",
                     "content": f"Answer the following question in a friendly, conversational tone: {user_question}"
@@ -133,7 +168,7 @@ async def conversation_logic(messages, metadata):
             "stream": False,
         }
         
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
                 headers=headers,
@@ -255,7 +290,9 @@ async def conversation_endpoint(request: Request):
         )
     
     except Exception as e:
-        print(f"❌ Error during conversation: {e}")
+        print(f"❌ Error during conversation: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return StreamingResponse(
             stream_response(
                 [{"role": "assistant", "content": "⚠️ Sorry, there was an error processing your message."}],
@@ -291,25 +328,19 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     """
     start_time = time.time()
     try:
-        # Initialize the BlobServiceClient
         blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
         container_name = "audio-files"
         blob_name = audio_filename
 
-        # Get a blob client
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
 
-        # Set Content-Type to audio/mpeg
         content_settings = ContentSettings(content_type="audio/mpeg")
 
-        # Upload the file with the correct Content-Type
         with open(audio_path, "rb") as f:
             await asyncio.to_thread(blob_client.upload_blob, f, overwrite=True, content_settings=content_settings)
 
-        # Construct the public URL
         public_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_name}"
 
-        # Verify the URL is accessible
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.head(public_url)
             if response.status_code != 200:
@@ -320,7 +351,6 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
         print(f"❌ Azure Blob Storage upload error: {str(e)}")
         raise
     finally:
-        # Close the BlobServiceClient to free resources
         blob_service_client.close()
 
     end_time = time.time()
@@ -330,50 +360,55 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
 
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
-    form = await request.form()
-    user_input = Body.strip().lower()
-    media_url = form.get("MediaUrl0")
-    media_content_type = form.get("MediaContentType0")
-
-    print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
-
-    voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
-    is_voice_request = any(phrase in user_input for phrase in voice_phrases)
-    is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
-
-    if user_input == "reset":
-        if From in conversation_history:
-            del conversation_history[From]
-            print(f"🔄 Reset conversation history for {From}")
-        text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
-    else:
-        if From not in conversation_history:
-            conversation_history[From] = []
-        
-        conversation_history[From].append({"role": "user", "content": user_input or "[Voice message]"})
-        print(f"📜 Full conversation history for {From}: {conversation_history[From]}")
-        
-        metadata = {"phone": From, "country": "auto", "language": "en"}
-        try:
-            result = await conversation_logic(conversation_history[From], metadata)
-            text_reply = result[0]["content"]
-            conversation_history[From].append({"role": "assistant", "content": text_reply})
-        except Exception as e:
-            print(f"❌ Error in twilio-webhook: {e}")
-            text_reply = "⚠️ Sorry, something went wrong."
-
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        print(f"❌ Twilio credentials missing: SID={TWILIO_ACCOUNT_SID}, Token={TWILIO_AUTH_TOKEN}")
-        return PlainTextResponse("Twilio credentials missing", status_code=500)
-    
     try:
+        form = await request.form()
+        user_input = Body.strip().lower()
+        media_url = form.get("MediaUrl0")
+        media_content_type = form.get("MediaContentType0")
+
+        print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
+
+        voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
+        is_voice_request = any(phrase in user_input for phrase in voice_phrases)
+        is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
+
+        if is_voice_message and media_url:
+            transcribed_text = await transcribe_audio(media_url)
+            user_input = transcribed_text.strip().lower() if transcribed_text else "[Voice message]"
+            print(f"🎙️ Transcribed voice message: {user_input}")
+
+        if user_input == "reset":
+            if From in conversation_history:
+                del conversation_history[From]
+                print(f"🔄 Reset conversation history for {From}")
+            text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
+        else:
+            if From not in conversation_history:
+                conversation_history[From] = []
+            
+            conversation_history[From].append({"role": "user", "content": user_input})
+            print(f"📜 Full conversation history for {From}: {conversation_history[From]}")
+            
+            metadata = {"phone": From, "country": "auto", "language": "en"}
+            try:
+                result = await conversation_logic(conversation_history[From], metadata)
+                text_reply = result[0]["content"]
+                conversation_history[From].append({"role": "assistant", "content": text_reply})
+            except Exception as e:
+                print(f"❌ Error in twilio-webhook conversation_logic: {str(e)}")
+                text_reply = "⚠️ Sorry, something went wrong."
+
+        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+            print(f"❌ Twilio credentials missing: SID={TWILIO_ACCOUNT_SID}, Token={TWILIO_AUTH_TOKEN}")
+            return PlainTextResponse("Twilio credentials missing", status_code=500)
+        
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-            text_reply = text_reply[:150]  # Limit for memory optimization
+            text_reply = text_reply[:150]
             try:
                 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
                 audio_dir = "static/audio"
-                os.makedirs(audio_dir, exist_ok=True)  # Ensure directory exists
+                os.makedirs(audio_dir, exist_ok=True)
                 audio_filename = f"{uuid.uuid4()}.mp3"
                 audio_path = os.path.join(audio_dir, audio_filename)
                 
@@ -392,16 +427,13 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                         if chunk:
                             f.write(chunk)
                 
-                # Check file size (WhatsApp max: 16MB)
                 file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
                 print(f"📏 Audio file size: {file_size_mb:.2f} MB")
                 if file_size_mb > 16:
                     raise Exception("Audio file exceeds WhatsApp 16MB limit")
                 
-                # Upload to Azure Blob Storage instead of serving from Render
                 audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
-                # Verify the file is accessible locally before sending
                 if not os.path.exists(audio_path):
                     raise Exception("Audio file not found after creation")
                 
@@ -410,7 +442,6 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     from_=TWILIO_PHONE_NUMBER,
                     to=From
                 )
-                # Check message status after sending
                 updated_message = client.messages(message.sid).fetch()
                 print(f"📤 Audio message status: {updated_message.status}, SID: {message.sid}, URL: {audio_url}")
                 if updated_message.status in ["failed", "undelivered"]:
@@ -425,7 +456,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     background_tasks.add_task(cleanup_audio, audio_path)
                     print(f"✅ Audio message sent to {From}, SID: {message.sid}, URL: {audio_url}")
             except Exception as e:
-                print(f"❌ Error generating audio with ElevenLabs: {e}")
+                print(f"❌ Error generating audio with ElevenLabs: {str(e)}")
                 message = client.messages.create(
                     body=text_reply,
                     from_=TWILIO_PHONE_NUMBER,
@@ -439,11 +470,14 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 to=From
             )
             print(f"✅ Text message sent to {From}, SID: {message.sid}")
-    except Exception as e:
-        print(f"❌ Error sending message via Twilio REST API: {str(e)}")
-        return PlainTextResponse("", status_code=500)
+        
+        return PlainTextResponse("")
     
-    return PlainTextResponse("")
+    except Exception as e:
+        print(f"❌ Critical error in twilio-webhook: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return PlainTextResponse("", status_code=500)
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
@@ -530,7 +564,7 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
 </Response>'''
         return Response(content=twiml, media_type="application/xml")
     except Exception as e:
-        print(f"❌ Error in process_speech: {e}")
+        print(f"❌ Error in process_speech: {str(e)}")
         twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>Sorry, an error occurred. Please try again later.</Say>
