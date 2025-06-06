@@ -211,6 +211,60 @@ async def stream_response(messages, session_id):
     yield json.dumps(response_data) + "\n"
     yield "\n"
 
+async def detect_feedback(user_input: str) -> dict:
+    """
+    Use Azure OpenAI to detect feedback in a WhatsApp message and extract fact_id and liked status.
+
+    Args:
+        user_input (str): The WhatsApp message text.
+
+    Returns:
+        dict: {
+            "is_feedback": bool,
+            "fact_id": str or None,
+            "liked": bool or None
+        }
+    """
+    print(f"🧠 Detecting feedback in message: {user_input}")
+    try:
+        openai_body = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a feedback detection assistant. Analyze the user message to determine if it contains feedback "
+                        "about a fact (e.g., liking or disliking a fact with an ID like 'fact001'). "
+                        "Respond in JSON format: { \"is_feedback\": boolean, \"fact_id\": string or null, \"liked\": boolean or null }. "
+                        "If no feedback is detected, return { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }. "
+                        "Examples of feedback: 'I liked fact001', 'fact002 was great', 'I disliked fact003', 'fact004 was bad'."
+                    )
+                },
+                {"role": "user", "content": user_input}
+            ],
+            "temperature": 0,
+            "max_tokens": 100,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stream": False,
+        }
+        headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers=headers,
+                json=openai_body
+            )
+            response.raise_for_status()
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"]
+            feedback_data = json.loads(reply)
+            print(f"✅ Feedback detection response: {feedback_data}")
+            return feedback_data
+    except Exception as e:
+        print(f"❌ Error in detect_feedback: {str(e)}")
+        return {"is_feedback": False, "fact_id": None, "liked": None}
+
 @app.post("/conversation")
 async def conversation_endpoint(request: Request):
     try:
@@ -380,23 +434,23 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
 
         print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
 
-        # Check for feedback in user_input (e.g., "I liked fact001" or "I dislike fact004")
-        feedback_pattern = r"(?:i\s+)?(?:like|liked|dislike|disliked)\s+(fact\d+)"
-        feedback_match = re.search(feedback_pattern, user_input)
+        # Detect feedback using Azure OpenAI
         feedback_processed = False
         feedback_response = ""
-
-        if feedback_match:
-            fact_id = feedback_match.group(1)
-            liked = "like" in feedback_match.group(0).lower()
-            try:
-                update_preferences(From, fact_id, liked)
-                feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for {fact_id}."
-                feedback_processed = True
-                print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
-            except Exception as e:
-                print(f"❌ Error processing feedback: {str(e)}")
-                feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+        feedback_data = await detect_feedback(user_input)
+        if feedback_data.get("is_feedback", False):
+            fact_id = feedback_data.get("fact_id")
+            liked = feedback_data.get("liked")
+            if fact_id is not None and liked is not None:
+                print(f"🔔 Feedback detected: fact_id={fact_id}, liked={liked}")
+                try:
+                    update_preferences(From, fact_id, liked)
+                    feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
+                    feedback_processed = True
+                    print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
+                except Exception as e:
+                    print(f"❌ Error processing feedback: {str(e)}")
+                    feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
 
         voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
         is_voice_request = any(phrase in user_input for phrase in voice_phrases)
@@ -409,18 +463,19 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             print(f"🎙️ Transcribed voice message: {user_input}")
 
             # Check for feedback in transcribed text
-            feedback_match = re.search(feedback_pattern, user_input)
-            if feedback_match:
-                fact_id = feedback_match.group(1)
-                liked = "like" in feedback_match.group(0).lower()
-                try:
-                    update_preferences(From, fact_id, liked)
-                    feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for {fact_id}."
-                    feedback_processed = True
-                    print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
-                except Exception as e:
-                    print(f"❌ Error processing feedback: {str(e)}")
-                    feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+            feedback_data = await detect_feedback(user_input)
+            if feedback_data.get("is_feedback", False):
+                fact_id = feedback_data.get("fact_id")
+                liked = feedback_data.get("liked")
+                if fact_id is not None and liked is not None:
+                    try:
+                        update_preferences(From, fact_id, liked)
+                        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
+                        feedback_processed = True
+                        print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
+                    except Exception as e:
+                        print(f"❌ Error processing feedback: {str(e)}")
+                        feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
 
         if user_input == "reset":
             if From in conversation_history:
