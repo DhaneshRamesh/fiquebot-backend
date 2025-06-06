@@ -233,10 +233,16 @@ async def detect_feedback(user_input: str) -> dict:
                     "role": "system",
                     "content": (
                         "You are a feedback detection assistant. Analyze the user message to determine if it contains feedback "
-                        "about a fact (e.g., liking or disliking a fact with an ID like 'fact001'). "
+                        "about a fact (e.g., liking or disliking a fact with an ID like 'fact001' or referring to the previous response with 'I like this'). "
                         "Respond in JSON format: { \"is_feedback\": boolean, \"fact_id\": string or null, \"liked\": boolean or null }. "
+                        "If the message is 'I like this' or 'I dislike this' (or similar), set is_feedback to true, fact_id to null, and liked to true/false accordingly. "
+                        "For explicit feedback (e.g., 'I liked fact001'), extract the fact_id. "
                         "If no feedback is detected, return { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }. "
-                        "Examples of feedback: 'I liked fact001', 'fact002 was great', 'I disliked fact003', 'fact004 was bad'."
+                        "Examples: "
+                        "- 'I liked fact001' -> { \"is_feedback\": true, \"fact_id\": \"fact001\", \"liked\": true } "
+                        "- 'I like this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": true } "
+                        "- 'fact002 was bad' -> { \"is_feedback\": true, \"fact_id\": \"fact002\", \"liked\": false } "
+                        "- 'hello' -> { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }"
                     )
                 },
                 {"role": "user", "content": user_input}
@@ -264,6 +270,58 @@ async def detect_feedback(user_input: str) -> dict:
     except Exception as e:
         print(f"❌ Error in detect_feedback: {str(e)}")
         return {"is_feedback": False, "fact_id": None, "liked": None}
+
+async def extract_fact_id(previous_message: str) -> str:
+    """
+    Use Azure OpenAI to extract the fact_id from the previous assistant message.
+
+    Args:
+        previous_message (str): The previous assistant message text.
+
+    Returns:
+        str or None: The extracted fact_id (e.g., 'fact001') or None if not found.
+    """
+    print(f"🧠 Extracting fact_id from previous message: {previous_message}")
+    try:
+        openai_body = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a fact ID extraction assistant. Analyze the provided message to extract the fact ID (e.g., 'fact001') if present. "
+                        "Respond in JSON format: { \"fact_id\": string or null }. "
+                        "If no fact ID is found, return { \"fact_id\": null }. "
+                        "Examples: "
+                        "- 'Here is fact001: ...' -> { \"fact_id\": \"fact001\" } "
+                        "- 'This is a response without a fact ID.' -> { \"fact_id\": null }"
+                    )
+                },
+                {"role": "user", "content": previous_message}
+            ],
+            "temperature": 0,
+            "max_tokens": 50,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stream": False,
+        }
+        headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers=headers,
+                json=openai_body
+            )
+            response.raise_for_status()
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"]
+            fact_data = json.loads(reply)
+            fact_id = fact_data.get("fact_id")
+            print(f"✅ Fact ID extraction response: {fact_data}")
+            return fact_id
+    except Exception as e:
+        print(f"❌ Error in extract_fact_id: {str(e)}")
+        return None
 
 @app.post("/conversation")
 async def conversation_endpoint(request: Request):
@@ -424,6 +482,29 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     print(f"✅ Public URL: {public_url}")
     return public_url
 
+async def process_feedback(user_id: str, fact_id: str, liked: bool, feedback_response: str) -> tuple[bool, str]:
+    """
+    Process feedback by calling update_preferences and updating feedback_response.
+
+    Args:
+        user_id (str): The user's ID (e.g., WhatsApp number).
+        fact_id (str): The ID of the fact being liked or disliked.
+        liked (bool): Whether the user liked (True) or disliked (False) the fact.
+        feedback_response (str): The current feedback response string.
+
+    Returns:
+        tuple: (bool, str) indicating if feedback was processed and the updated feedback response.
+    """
+    try:
+        update_preferences(user_id, fact_id, liked)
+        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
+        print(f"✅ Feedback processed for {user_id}: fact_id={fact_id}, liked={liked}")
+        return True, feedback_response
+    except Exception as e:
+        print(f"❌ Error processing feedback: {str(e)}")
+        feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+        return False, feedback_response
+
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
     try:
@@ -441,16 +522,32 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         if feedback_data.get("is_feedback", False):
             fact_id = feedback_data.get("fact_id")
             liked = feedback_data.get("liked")
-            if fact_id is not None and liked is not None:
-                print(f"🔔 Feedback detected: fact_id={fact_id}, liked={liked}")
-                try:
-                    update_preferences(From, fact_id, liked)
-                    feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
-                    feedback_processed = True
-                    print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
-                except Exception as e:
-                    print(f"❌ Error processing feedback: {str(e)}")
-                    feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+            if fact_id is None and liked is not None:
+                # Contextual feedback (e.g., "I like this")
+                print(f"🔔 Contextual feedback detected: liked={liked}")
+                if From in conversation_history and conversation_history[From]:
+                    # Find the last assistant message
+                    last_assistant_message = next(
+                        (msg["content"] for msg in reversed(conversation_history[From]) if msg["role"] == "assistant"),
+                        None
+                    )
+                    if last_assistant_message:
+                        fact_id = await extract_fact_id(last_assistant_message)
+                        if fact_id:
+                            feedback_processed, feedback_response = await process_feedback(From, fact_id, liked, feedback_response)
+                        else:
+                            feedback_response = "⚠️ Couldn’t identify the fact you’re referring to. Please specify, e.g., 'I liked fact001'."
+                            print(f"❌ No fact_id found in previous message: {last_assistant_message}")
+                    else:
+                        feedback_response = "⚠️ No previous response to refer to. Please specify the fact ID."
+                        print(f"❌ No previous assistant message found for {From}")
+                else:
+                    feedback_response = "⚠️ No conversation history found. Please specify the fact ID."
+                    print(f"❌ No conversation history for {From}")
+            elif fact_id is not None and liked is not None:
+                # Explicit feedback (e.g., "I liked fact001")
+                print(f"🔔 Explicit feedback detected: fact_id={fact_id}, liked={liked}")
+                feedback_processed, feedback_response = await process_feedback(From, fact_id, liked, feedback_response)
 
         voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
         is_voice_request = any(phrase in user_input for phrase in voice_phrases)
@@ -467,15 +564,31 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             if feedback_data.get("is_feedback", False):
                 fact_id = feedback_data.get("fact_id")
                 liked = feedback_data.get("liked")
-                if fact_id is not None and liked is not None:
-                    try:
-                        update_preferences(From, fact_id, liked)
-                        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
-                        feedback_processed = True
-                        print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
-                    except Exception as e:
-                        print(f"❌ Error processing feedback: {str(e)}")
-                        feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+                if fact_id is None and liked is not None:
+                    # Contextual feedback in voice message
+                    print(f"🔔 Contextual feedback detected in voice: liked={liked}")
+                    if From in conversation_history and conversation_history[From]:
+                        last_assistant_message = next(
+                            (msg["content"] for msg in reversed(conversation_history[From]) if msg["role"] == "assistant"),
+                            None
+                        )
+                        if last_assistant_message:
+                            fact_id = await extract_fact_id(last_assistant_message)
+                            if fact_id:
+                                feedback_processed, feedback_response = await process_feedback(From, fact_id, liked, feedback_response)
+                            else:
+                                feedback_response = "⚠️ Couldn’t identify the fact you’re referring to. Please specify, e.g., 'I liked fact001'."
+                                print(f"❌ No fact_id found in previous message: {last_assistant_message}")
+                        else:
+                            feedback_response = "⚠️ No previous response to refer to. Please specify the fact ID."
+                            print(f"❌ No previous assistant message found for {From}")
+                    else:
+                        feedback_response = "⚠️ No conversation history found. Please specify the fact ID."
+                        print(f"❌ No conversation history for {From}")
+                elif fact_id is not None and liked is not None:
+                    # Explicit feedback in voice message
+                    print(f"🔔 Explicit feedback detected in voice: fact_id={fact_id}, liked={liked}")
+                    feedback_processed, feedback_response = await process_feedback(From, fact_id, liked, feedback_response)
 
         if user_input == "reset":
             if From in conversation_history:
