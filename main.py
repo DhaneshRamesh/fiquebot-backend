@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response, StreamingResponse, FileResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -13,12 +13,14 @@ import time
 import asyncio
 from dotenv import load_dotenv
 from twilio.rest import Client
+from azure.cosmos import CosmosClient, PartitionKey
 from azure_search import search_articles
 from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 from azure.storage.blob import BlobServiceClient, ContentSettings
+from cosmos_client import update_preferences
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -42,7 +44,8 @@ AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRIN
 required_vars = [
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
-    "AZURE_STORAGE_CONNECTION_STRING"
+    "AZURE_STORAGE_CONNECTION_STRING",
+    "COSMOS_DB_ENDPOINT", "COSMOS_DB_KEY"
 ]
 for var in required_vars:
     if not os.environ.get(var):
@@ -70,6 +73,11 @@ class ConversationRequest(BaseModel):
     messages: Optional[List[Message]] = []
     session_id: Optional[str] = None
 
+class FeedbackRequest(BaseModel):
+    user_id: str
+    fact_id: str
+    liked: bool
+
 @app.get("/")
 async def root():
     return {"message": "Backend online!"}
@@ -81,7 +89,6 @@ async def transcribe_audio(audio_url: str) -> str:
     print(f"🎙️ Starting transcription for audio URL: {audio_url}")
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            # Download the audio file
             print(f"📥 Downloading audio from {audio_url}")
             response = await client.get(audio_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
             if response.is_redirect:
@@ -90,7 +97,6 @@ async def transcribe_audio(audio_url: str) -> str:
             audio_content = response.content
             print(f"✅ Audio downloaded successfully, size: {len(audio_content)} bytes")
 
-            # Send to Azure OpenAI Whisper endpoint
             headers = {
                 "Content-Type": "multipart/form-data",
                 "api-key": AZURE_OPENAI_KEY
@@ -374,6 +380,24 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
 
         print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
 
+        # Check for feedback in user_input (e.g., "I liked fact001" or "I dislike fact004")
+        feedback_pattern = r"(?:i\s+)?(?:like|liked|dislike|disliked)\s+(fact\d+)"
+        feedback_match = re.search(feedback_pattern, user_input)
+        feedback_processed = False
+        feedback_response = ""
+
+        if feedback_match:
+            fact_id = feedback_match.group(1)
+            liked = "like" in feedback_match.group(0).lower()
+            try:
+                update_preferences(From, fact_id, liked)
+                feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for {fact_id}."
+                feedback_processed = True
+                print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
+            except Exception as e:
+                print(f"❌ Error processing feedback: {str(e)}")
+                feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+
         voice_phrases = ["send voice", "reply in audio", "voice answer", "audio response"]
         is_voice_request = any(phrase in user_input for phrase in voice_phrases)
         is_voice_message = media_url and media_content_type and "audio" in media_content_type.lower()
@@ -383,6 +407,20 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             transcribed_text = await transcribe_audio(media_url)
             user_input = transcribed_text.strip().lower() if transcribed_text else "[Voice message]"
             print(f"🎙️ Transcribed voice message: {user_input}")
+
+            # Check for feedback in transcribed text
+            feedback_match = re.search(feedback_pattern, user_input)
+            if feedback_match:
+                fact_id = feedback_match.group(1)
+                liked = "like" in feedback_match.group(0).lower()
+                try:
+                    update_preferences(From, fact_id, liked)
+                    feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for {fact_id}."
+                    feedback_processed = True
+                    print(f"✅ Feedback processed for {From}: fact_id={fact_id}, liked={liked}")
+                except Exception as e:
+                    print(f"❌ Error processing feedback: {str(e)}")
+                    feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
 
         if user_input == "reset":
             if From in conversation_history:
@@ -400,10 +438,14 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             try:
                 result = await conversation_logic(conversation_history[From], metadata)
                 text_reply = result[0]["content"]
+                if feedback_processed:
+                    text_reply = f"{feedback_response}\n\n{text_reply}"
                 conversation_history[From].append({"role": "assistant", "content": text_reply})
             except Exception as e:
                 print(f"❌ Error in twilio-webhook conversation_logic: {str(e)}")
                 text_reply = "⚠️ Sorry, something went wrong."
+                if feedback_processed:
+                    text_reply = f"{feedback_response}\n\n{text_reply}"
 
         if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
             print(f"❌ Twilio credentials missing: SID={TWILIO_ACCOUNT_SID}, Token={TWILIO_AUTH_TOKEN}")
@@ -485,6 +527,18 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         import traceback
         traceback.print_exc()
         return PlainTextResponse("", status_code=500)
+
+@app.post("/feedback")
+async def process_feedback(feedback: FeedbackRequest):
+    try:
+        # Validate user_id format (allow whatsapp:+... or uuid-...)
+        if not (feedback.user_id.startswith("whatsapp:") or feedback.user_id.startswith("uuid-")):
+            raise HTTPException(status_code=400, detail="Invalid user_id format")
+        update_preferences(feedback.user_id, feedback.fact_id, feedback.liked)
+        return {"status": "success"}
+    except Exception as e:
+        print(f"❌ Error in process_feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
