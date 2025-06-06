@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response, FileResponse
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response
+from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -534,7 +534,7 @@ async def process_feedback(feedback: FeedbackRequest):
         # Validate user_id format (allow whatsapp:+... or uuid-...)
         if not (feedback.user_id.startswith("whatsapp:") or feedback.user_id.startswith("uuid-")):
             raise HTTPException(status_code=400, detail="Invalid user_id format")
-        update_preferences(feedback.user_id, fact_id, feedback.liked)
+        update_preferences(feedback.user_id, feedback.fact_id, feedback.liked)
         return {"status": "success"}
     except Exception as e:
         print(f"❌ Error in process_feedback: {str(e)}")
