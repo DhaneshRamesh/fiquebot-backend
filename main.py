@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response, StreamingResponse, FileResponse
+from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response, FileResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -20,7 +20,7 @@ import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 from azure.storage.blob import BlobServiceClient, ContentSettings
-from cosmos_client import update_preferences
+from cosmosdb import update_preferences
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -534,7 +534,7 @@ async def process_feedback(feedback: FeedbackRequest):
         # Validate user_id format (allow whatsapp:+... or uuid-...)
         if not (feedback.user_id.startswith("whatsapp:") or feedback.user_id.startswith("uuid-")):
             raise HTTPException(status_code=400, detail="Invalid user_id format")
-        update_preferences(feedback.user_id, feedback.fact_id, feedback.liked)
+        update_preferences(feedback.user_id, fact_id, feedback.liked)
         return {"status": "success"}
     except Exception as e:
         print(f"❌ Error in process_feedback: {str(e)}")
