@@ -20,7 +20,7 @@ import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 from azure.storage.blob import BlobServiceClient, ContentSettings
-from cosmosdb import update_preferences
+from cosmos_client import update_preferences
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
