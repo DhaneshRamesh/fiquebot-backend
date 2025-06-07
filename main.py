@@ -235,12 +235,14 @@ async def detect_feedback(user_input: str) -> dict:
                         "You are a feedback detection assistant. Analyze the user message to determine if it contains feedback "
                         "about a fact (e.g., liking or disliking a fact with an ID like 'fact001' or referring to the previous response with 'I like this'). "
                         "Respond in JSON format: { \"is_feedback\": boolean, \"fact_id\": string or null, \"liked\": boolean or null }. "
-                        "If the message is 'I like this' or 'I dislike this' (or similar), set is_feedback to true, fact_id to null, and liked to true/false accordingly. "
+                        "If the message is 'I like this', 'I love this', 'this is great', or similar positive feedback, set is_feedback to true, fact_id to null, and liked to true. "
+                        "If the message is 'I dislike this', 'I hate this', 'this is bad', or similar negative feedback, set is_feedback to true, fact_id to null, and liked to false. "
                         "For explicit feedback (e.g., 'I liked fact001'), extract the fact_id. "
                         "If no feedback is detected, return { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }. "
                         "Examples: "
                         "- 'I liked fact001' -> { \"is_feedback\": true, \"fact_id\": \"fact001\", \"liked\": true } "
                         "- 'I like this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": true } "
+                        "- 'I dislike this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": false } "
                         "- 'fact002 was bad' -> { \"is_feedback\": true, \"fact_id\": \"fact002\", \"liked\": false } "
                         "- 'hello' -> { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }"
                     )
@@ -289,10 +291,12 @@ async def extract_fact_id(previous_message: str) -> str:
                     "role": "system",
                     "content": (
                         "You are a fact ID extraction assistant. Analyze the provided message to extract the fact ID (e.g., 'fact001') if present. "
+                        "If no explicit fact ID is found, but the message references a specific topic or article, generate a fact ID based on the topic or article title (e.g., 'fact_emf_sustainability' for a message about EMF sustainability). "
                         "Respond in JSON format: { \"fact_id\": string or null }. "
-                        "If no fact ID is found, return { \"fact_id\": null }. "
+                        "If no fact ID can be determined, return { \"fact_id\": null }. "
                         "Examples: "
                         "- 'Here is fact001: ...' -> { \"fact_id\": \"fact001\" } "
+                        "- 'EMF sustainability refers to... Source: How does EMF radiation impact relationships and intimacy?' -> { \"fact_id\": \"fact_emf_sustainability\" } "
                         "- 'This is a response without a fact ID.' -> { \"fact_id\": null }"
                     )
                 },
@@ -322,6 +326,29 @@ async def extract_fact_id(previous_message: str) -> str:
     except Exception as e:
         print(f"❌ Error in extract_fact_id: {str(e)}")
         return None
+
+async def process_feedback(user_id: str, fact_id: str, liked: bool, feedback_response: str) -> tuple[bool, str]:
+    """
+    Process feedback by calling update_preferences and updating feedback_response.
+
+    Args:
+        user_id (str): The user's ID (e.g., WhatsApp number).
+        fact_id (str): The ID of the fact being liked or disliked.
+        liked (bool): Whether the user liked (True) or disliked (False) the fact.
+        feedback_response (str): The current feedback response string.
+
+    Returns:
+        tuple: (bool, str) indicating if feedback was processed and the updated feedback response.
+    """
+    try:
+        update_preferences(user_id, fact_id, liked)
+        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact {fact_id}."
+        print(f"✅ Feedback processed for {user_id}: fact_id={fact_id}, liked={liked}")
+        return True, feedback_response
+    except Exception as e:
+        print(f"❌ Error processing feedback: {str(e)}")
+        feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
+        return False, feedback_response
 
 @app.post("/conversation")
 async def conversation_endpoint(request: Request):
@@ -497,7 +524,7 @@ async def process_feedback(user_id: str, fact_id: str, liked: bool, feedback_res
     """
     try:
         update_preferences(user_id, fact_id, liked)
-        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact{fact_id}."
+        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact {fact_id}."
         print(f"✅ Feedback processed for {user_id}: fact_id={fact_id}, liked={liked}")
         return True, feedback_response
     except Exception as e:
@@ -515,10 +542,13 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
 
         print(f"📩 Received WhatsApp message from {From}: Body={Body}, Media={media_url}")
 
-        # Detect feedback using Azure OpenAI
+        # Initialize feedback variables
         feedback_processed = False
         feedback_response = ""
+
+        # Detect feedback using Azure OpenAI
         feedback_data = await detect_feedback(user_input)
+        print(f"🔔 Feedback detection result: {feedback_data}")
         if feedback_data.get("is_feedback", False):
             fact_id = feedback_data.get("fact_id")
             liked = feedback_data.get("liked")
@@ -561,6 +591,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
 
             # Check for feedback in transcribed text
             feedback_data = await detect_feedback(user_input)
+            print(f"🔔 Voice feedback detection result: {feedback_data}")
             if feedback_data.get("is_feedback", False):
                 fact_id = feedback_data.get("fact_id")
                 liked = feedback_data.get("liked")
@@ -604,10 +635,14 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             
             metadata = {"phone": From, "country": "auto", "language": "en"}
             try:
-                result = await conversation_logic(conversation_history[From], metadata)
-                text_reply = result[0]["content"]
-                if feedback_processed:
-                    text_reply = f"{feedback_response}\n\n{text_reply}"
+                # Only call conversation_logic if no feedback was processed
+                if not feedback_processed:
+                    result = await conversation_logic(conversation_history[From], metadata)
+                    text_reply = result[0]["content"]
+                else:
+                    text_reply = feedback_response
+                if feedback_processed and not user_input in ["i like this", "i dislike this"]:
+                    text_reply = f"{feedback_response}\n\n{result[0]['content']}"
                 conversation_history[From].append({"role": "assistant", "content": text_reply})
             except Exception as e:
                 print(f"❌ Error in twilio-webhook conversation_logic: {str(e)}")
