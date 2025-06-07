@@ -509,29 +509,6 @@ async def upload_to_public_hosting(audio_path: str, audio_filename: str) -> str:
     print(f"✅ Public URL: {public_url}")
     return public_url
 
-async def process_feedback(user_id: str, fact_id: str, liked: bool, feedback_response: str) -> tuple[bool, str]:
-    """
-    Process feedback by calling update_preferences and updating feedback_response.
-
-    Args:
-        user_id (str): The user's ID (e.g., WhatsApp number).
-        fact_id (str): The ID of the fact being liked or disliked.
-        liked (bool): Whether the user liked (True) or disliked (False) the fact.
-        feedback_response (str): The current feedback response string.
-
-    Returns:
-        tuple: (bool, str) indicating if feedback was processed and the updated feedback response.
-    """
-    try:
-        update_preferences(user_id, fact_id, liked)
-        feedback_response = f"✅ Recorded your {'like' if liked else 'dislike'} for fact {fact_id}."
-        print(f"✅ Feedback processed for {user_id}: fact_id={fact_id}, liked={liked}")
-        return True, feedback_response
-    except Exception as e:
-        print(f"❌ Error processing feedback: {str(e)}")
-        feedback_response = "⚠️ Sorry, I couldn’t save your feedback."
-        return False, feedback_response
-
 @app.post("/twilio-webhook")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, From: str = Form(...), Body: str = Form(...)):
     try:
@@ -625,7 +602,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             if From in conversation_history:
                 del conversation_history[From]
                 print(f"🔄 Reset conversation history for {From}")
-            text_reply = "✅ Conversation reset. Let’s start fresh! Please tell me your country and phone number."
+            text_reply = "✅ Conversation reset. Let’s start fresh!"
         else:
             if From not in conversation_history:
                 conversation_history[From] = []
@@ -641,7 +618,8 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     text_reply = result[0]["content"]
                 else:
                     text_reply = feedback_response
-                if feedback_processed and not user_input in ["i like this", "i dislike this"]:
+                if feedback_processed and user_input not in ["i like this", "i dislike this"]:
+                    result = await conversation_logic(conversation_history[From], metadata)
                     text_reply = f"{feedback_response}\n\n{result[0]['content']}"
                 conversation_history[From].append({"role": "assistant", "content": text_reply})
             except Exception as e:
@@ -656,7 +634,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         if (is_voice_request or is_voice_message) and ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-            text_reply = text_reply[:150]
+            text_reply = text_reply[:150].strip()
             try:
                 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
                 audio_dir = "static/audio"
@@ -669,7 +647,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     text=text_reply,
                     voice_settings=VoiceSettings(
                         stability=0.5,
-                        similarity_boost=0.5
+                        similarity_boost=0.75
                     ),
                     output_format="mp3_44100_128"
                 )
@@ -687,6 +665,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 audio_url = await upload_to_public_hosting(audio_path, audio_filename)
                 
                 if not os.path.exists(audio_path):
+                    print(f"❌ Audio file not found after creation: {audio_path}")
                     raise Exception("Audio file not found after creation")
                 
                 message = client.messages.create(
@@ -697,7 +676,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 updated_message = client.messages(message.sid).fetch()
                 print(f"📤 Audio message status: {updated_message.status}, SID: {message.sid}, URL: {audio_url}")
                 if updated_message.status in ["failed", "undelivered"]:
-                    print(f"❌ Audio delivery failed with error: {updated_message.error_code} - {updated_message.error_message}")
+                    print(f"⚠️ Audio delivery failed: {updated_message.error_code} - {updated_message.error_message}")
                     message = client.messages.create(
                         body=text_reply,
                         from_=TWILIO_PHONE_NUMBER,
@@ -732,7 +711,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         return PlainTextResponse("", status_code=500)
 
 @app.post("/feedback")
-async def process_feedback(feedback: FeedbackRequest):
+async def process_feedback_endpoint(feedback: FeedbackRequest):
     try:
         # Validate user_id format (allow whatsapp:+... or uuid-...)
         if not (feedback.user_id.startswith("whatsapp:") or feedback.user_id.startswith("uuid-")):
@@ -740,48 +719,52 @@ async def process_feedback(feedback: FeedbackRequest):
         update_preferences(feedback.user_id, feedback.fact_id, feedback.liked)
         return {"status": "success"}
     except Exception as e:
-        print(f"❌ Error in process_feedback: {str(e)}")
+        print(f"❌ Error in process_feedback_endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/extract_metadata")
 async def extract_metadata_via_openai(request: Request):
-    data = await request.json()
-    user_input = data.get("text")
-    if not user_input:
-        return {"error": "No text provided."}
-    openai_body = {
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a metadata extraction assistant. Extract phone number, country, and language from the text below. Respond strictly in this JSON format: { \"phone\": \"\", \"country\": \"\", \"language\": \"\", \"confidence\": 0.95 }"
-            },
-            {"role": "user", "content": user_input}
-        ],
-        "temperature": 0,
-        "max_tokens": 100,
-        "top_p": 1,
-        "frequency_penalty": 0,
-        "presence_penalty": 0,
-        "stream": False,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": AZURE_OPENAI_KEY
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(
-            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
-            headers=headers,
-            json=openai_body
-        )
     try:
-        result = response.json()
-        reply = result["choices"][0]["message"]["content"]
-        return json.loads(reply)
+        data = await request.json()
+        user_input = data.get("text")
+        if not user_input:
+            return {"error": "No text provided."}
+        openai_data = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a metadata extraction assistant. Extract phone number, country, and language from the text below. "
+                        "Respond strictly in JSON format: { \"phone\": \"\", \"country\": \"\", \"language\": \"\", \"confidence\": 0.95 }"
+                    )
+                },
+                {"role": "user", "content": user_input}
+            ],
+            "temperature": 0,
+            "max_tokens": 100,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stream": False,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": AZURE_OPENAI_KEY
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers=headers,
+                json=openai_data
+            )
+            response.raise_for_status()
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"]
+            return json.loads(reply)
     except Exception as e:
+        print(f"❌ Error in extract_metadata_via_openai: {str(e)}")
         return {
-            "error": "Failed to parse OpenAI response.",
-            "raw": reply,
+            "error": "Failed to parse OpenAI response",
             "details": str(e)
         }
 
@@ -790,7 +773,7 @@ async def voice():
     twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Gather input="speech" action="/process_speech" method="POST" timeout="5">
-        <Say>Hello, you're now connected to the Fique AI assistant. Please say something after the beep.</Say>
+        <Say>Hello, you're connected to the Fique AI assistant. Please say something after the beep.</Say>
     </Gather>
     <Say>Sorry, I didn't catch that. Goodbye!</Say>
 </Response>'''
@@ -838,4 +821,4 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
