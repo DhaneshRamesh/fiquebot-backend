@@ -143,7 +143,7 @@ async def conversation_logic(messages, metadata):
         fallback_phrases = [
             "yes", "yeah", "sure", "go ahead", "please do", "try general", "fallback", "try again",
             "use gpt", "search online", "search web", "do it", "okay", "alright", "continue",
-            "that’s fine", "proceed", "give me an answer", "show me anyway"
+            "that’s fine", "proceed", "give me an answer", "show me anyway", "tell genarally"
         ]
         fallback_flag = any(
             any(phrase in m['content'].lower() for phrase in fallback_phrases)
@@ -236,13 +236,13 @@ async def detect_feedback(user_input: str) -> dict:
                         "about a fact (e.g., liking or disliking a fact with an ID like 'fact001' or referring to the previous response with 'I like this'). "
                         "Respond in JSON format: { \"is_feedback\": boolean, \"fact_id\": string or null, \"liked\": boolean or null }. "
                         "If the message is 'I like this', 'I love this', 'this is great', or similar positive feedback, set is_feedback to true, fact_id to null, and liked to true. "
-                        "If the message is 'I dislike this', 'I hate this', 'this is bad', or similar negative feedback, set is_feedback to true, fact_id to null, and liked to false. "
+                        "If the message is 'I dislike this', 'I hate this', 'this is bad', 'I dont like this', or similar negative feedback, set is_feedback to true, fact_id to null, and liked to false. "
                         "For explicit feedback (e.g., 'I liked fact001'), extract the fact_id. "
                         "If no feedback is detected, return { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }. "
                         "Examples: "
                         "- 'I liked fact001' -> { \"is_feedback\": true, \"fact_id\": \"fact001\", \"liked\": true } "
                         "- 'I like this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": true } "
-                        "- 'I dislike this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": false } "
+                        "- 'I dont like this' -> { \"is_feedback\": true, \"fact_id\": null, \"liked\": false } "
                         "- 'fact002 was bad' -> { \"is_feedback\": true, \"fact_id\": \"fact002\", \"liked\": false } "
                         "- 'hello' -> { \"is_feedback\": false, \"fact_id\": null, \"liked\": null }"
                     )
@@ -275,13 +275,13 @@ async def detect_feedback(user_input: str) -> dict:
 
 async def extract_fact_id(previous_message: str) -> str:
     """
-    Use Azure OpenAI to extract the fact_id from the previous assistant message.
+    Use Azure OpenAI to extract or generate a fact_id from the previous assistant message.
 
     Args:
         previous_message (str): The previous assistant message text.
 
     Returns:
-        str or None: The extracted fact_id (e.g., 'fact001') or None if not found.
+        str or None: The extracted or generated fact_id (e.g., 'fact_donald_trump') or None if not possible.
     """
     print(f"🧠 Extracting fact_id from previous message: {previous_message}")
     try:
@@ -290,14 +290,15 @@ async def extract_fact_id(previous_message: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You are a fact ID extraction assistant. Analyze the provided message to extract the fact ID (e.g., 'fact001') if present. "
-                        "If no explicit fact ID is found, but the message references a specific topic or article, generate a fact ID based on the topic or article title (e.g., 'fact_emf_sustainability' for a message about EMF sustainability). "
-                        "Respond in JSON format: { \"fact_id\": string or null }. "
-                        "If no fact ID can be determined, return { \"fact_id\": null }. "
+                        "You are a fact ID extraction assistant. Analyze the provided message to extract an explicit fact ID (e.g., 'fact001') if present. "
+                        "If no explicit fact ID is found, generate a concise fact ID based on the main topic or subject of the message (e.g., 'fact_emf_sustainability' for a message about EMF sustainability, 'fact_donald_trump' for a message about Donald Trump). "
+                        "Use lowercase and underscores for generated IDs. Respond in JSON format: { \"fact_id\": string or null }. "
+                        "If no fact ID can be determined or generated, return { \"fact_id\": null }. "
                         "Examples: "
                         "- 'Here is fact001: ...' -> { \"fact_id\": \"fact001\" } "
-                        "- 'EMF sustainability refers to... Source: How does EMF radiation impact relationships and intimacy?' -> { \"fact_id\": \"fact_emf_sustainability\" } "
-                        "- 'This is a response without a fact ID.' -> { \"fact_id\": null }"
+                        "- 'EMF sustainability refers to... Source: ...' -> { \"fact_id\": \"fact_emf_sustainability\" } "
+                        "- 'Donald Trump is a former President...' -> { \"fact_id\": \"fact_donald_trump\" } "
+                        "- 'This is a generic response.' -> { \"fact_id\": null }"
                     )
                 },
                 {"role": "user", "content": previous_message}
@@ -618,7 +619,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     text_reply = result[0]["content"]
                 else:
                     text_reply = feedback_response
-                if feedback_processed and user_input not in ["i like this", "i dislike this"]:
+                if feedback_processed and user_input not in ["i like this", "i dislike this", "i dont like this"]:
                     result = await conversation_logic(conversation_history[From], metadata)
                     text_reply = f"{feedback_response}\n\n{result[0]['content']}"
                 conversation_history[From].append({"role": "assistant", "content": text_reply})
