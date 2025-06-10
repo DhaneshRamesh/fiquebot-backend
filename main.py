@@ -152,7 +152,7 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
 async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]:
     """Process conversation with search and implicit liking."""
     session_id = metadata.get("phone", str(uuid.uuid4()))
-    user_question = messages[-1]["content"]
+    user_question = messages[-1]["content"].strip().lower()
     print(f"🗣️ Question: {user_question}")
 
     liking_data = await detect_implicit_liking(session_id, messages)
@@ -165,7 +165,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
 
     def extract_keywords(text: str) -> str:
         words = re.findall(r'\w+', text.lower())
-        stopwords = {"the", "of", "and", "in", "on", "is", "to", "a"}
+        stopwords = {"the", "of", "and", "in", "on", "is", "to", "a", "about"}
         return " ".join([w for w in words if w not in stopwords][:4])
 
     keywords = extract_keywords(user_question)
@@ -178,37 +178,42 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
         for m in messages[-2:] if m["role"] == "user"
     )
 
-    if not search_contexts and not fallback_flag:
-        response = f"🤖 No articles found for '{keywords}'. Want a general answer?"
-        if liking_data["suggested_question"]:
-            response += f"\n\n💡 How about: {liking_data['suggested_question']}"
-        return [{"role": "assistant", "content": response}]
-
     cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
-    if search_contexts:
-        context_block = "\n\n".join([f"{item['snippet']}\nSource: {item['title']} ({item['url']})" for item in search_contexts])
-        cleaned_messages[-1]["content"] = f"Use this context, citing sources:\n\n{context_block}\n\nQuestion: {user_question}"
+    response_content = ""
+
+    if user_question in ["hi", "hello", "hey"]:
+        response_content = f"{user_question.capitalize()}! How can I help you today? 💡 Curious about EMF sustainability?"
+    elif not search_contexts and not fallback_flag:
+        response_content = f"🤖 No articles found for '{keywords}'. Want a general answer? 💡 Or ask about EMF sustainability!"
+        return [{"role": "assistant", "content": response_content}]
     else:
-        cleaned_messages[-1]["content"] = f"Answer conversationally: {user_question}"
+        if search_contexts:
+            context_block = "\n\n".join([f"{item['snippet']}\nSource: {item['title']} ({item['url']})" for item in search_contexts])
+            cleaned_messages[-1]["content"] = (
+                f"Answer conversationally, citing sources where relevant. Focus on EMF context if applicable:\n\n{context_block}\n\nQuestion: {user_question}"
+            )
+        else:
+            cleaned_messages[-1]["content"] = f"Answer conversationally, focusing on EMF context if relevant: {user_question}"
 
-    headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
-    body = {"messages": cleaned_messages, "temperature": 0.7, "max_tokens": 500, "stream": False}
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
-            headers=headers,
-            json=body
-        )
-        response.raise_for_status()
-        result = response.json()
+        headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
+        body = {"messages": cleaned_messages, "temperature": 0.7, "max_tokens": 500, "stream": False}
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                headers=headers,
+                json=body
+            )
+            response.raise_for_status()
+            result = response.json()
 
-    if not result.get("choices"):
-        response = "⚠️ Couldn’t generate a response."
-        if liking_data["suggested_question"]:
-            response += f"\n\n💡 How about: {liking_data['suggested_question']}"
-        return [{"role": "assistant", "content": response}]
+        if not result.get("choices"):
+            response_content = "⚠️ Couldn’t generate a response. 💡 Try asking about EMF sustainability!"
+        else:
+            response_content = result["choices"][0]["message"]["content"]
+            if search_contexts:
+                source_links = "\n".join([f"- [{item['title']}]({item['url']})" for item in search_contexts])
+                response_content += f"\n\n**Sources**:\n{source_links}"
 
-    response_content = result["choices"][0]["message"]["content"]
     if liking_data["suggested_question"]:
         response_content += f"\n\n💡 Next question: {liking_data['suggested_question']}"
     return [{"role": "assistant", "content": response_content}]
@@ -303,7 +308,7 @@ async def conversation_endpoint(request: Request):
 
         if not messages_data:
             return StreamingResponse(
-                stream_response([{"role": "assistant", "content": "👋 Welcome! What’s your question?"}], session_id),
+                stream_response([{"role": "assistant", "content": "👋 Hi! How can I help you today? 💡 Curious about EMF sustainability?"}], session_id),
                 media_type="text/event-stream"
             )
 
@@ -349,7 +354,7 @@ async def conversation_endpoint(request: Request):
                 "role": "assistant",
                 "content": (
                     f"✅ Got it!\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}\n"
-                    f"📘 What would you like to ask about Fique?\n💡 Suggested: What is Fique used for?"
+                    f"📘 How can I help you today? 💡 Curious about EMF sustainability?"
                 )
             }
             conversation_history[session_id].append({"role": "assistant", "content": response["content"], "timestamp": time.time()})
@@ -410,13 +415,13 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         form = await request.form()
         user_input = Body.strip().lower()
         media_url = form.get("MediaUrl0")
-        media_content_type = form.get("MediaContentType0")
-        print(f"📧 WhatsApp from {From}: {user_input}, Media: {media_url}")
+        media_content_type = form.get("MediaContentType", "")
+        print(f"📖 WhatsApp from {From}: {user_input}, Content-Type: {media_url}")
 
+        feedback_data = await detect_feedback(user_input)
         feedback_processed = False
         feedback_response = ""
 
-        feedback_data = await detect_feedback(user_input)
         if feedback_data.get("is_feedback"):
             fact_id = feedback_data.get("fact_id")
             liked = feedback_data.get("liked")
@@ -458,7 +463,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
 
         conversation_history.setdefault(From, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
 
-        metadata = {"phone": From, "country": "auto", "language": "en"}
+        metadata = {"phone": From, "country": None, "language": "en"}
         text_reply = feedback_response if feedback_processed else (await conversation_logic(conversation_history[From], metadata))[0]["content"]
         if feedback_processed and user_input not in ["i like this", "i dont like this"]:
             result = await conversation_logic(conversation_history[From], metadata)
@@ -467,30 +472,30 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         conversation_history[From].append({"role": "assistant", "content": text_reply, "timestamp": time.time()})
 
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        voice_phrases = ["send voice", "reply in audio", "voice answer"]
+        voice_phrases = ["send voice", "reply in audio", "voice"]
         is_voice_request = any(phrase in user_input for phrase in voice_phrases)
 
         if (is_voice_request or media_url) and ELEVENLABS_API_KEY:
-            text_reply = text_reply[:150].strip()
+            text_reply = text_reply[:500].strip()
             try:
                 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-                audio_dir = "static/audio"
+                audio_dir = os.path.join("static", "audio")
                 os.makedirs(audio_dir, exist_ok=True)
                 audio_filename = f"{uuid.uuid4()}.mp3"
                 audio_path = os.path.join(audio_dir, audio_filename)
 
-                audio_bytes = elevenlabs_client.text_to_speech.convert(
+                audio_files = elevenlabs_client.text_to_speech.convert(
                     voice_id=ELEVENLABS_VOICE_ID,
                     text=text_reply,
                     voice_settings=VoiceSettings(stability=0.25, similarity_boost=0.75),
                     output_format="mp3_44100_128"
                 )
-                with open(audio_path, "wb") as f:
-                    for chunk in audio_bytes:
-                        f.write(chunk)
+                with open(audio_path, "wb") as audio:
+                    for chunk in audio_files:
+                        audio.write(chunk)
 
                 if os.path.getsize(audio_path) / (1024 * 1024) > 16:
-                    raise Exception("Audio exceeds 16MB limit")
+                    raise Exception("Audio file too large")
 
                 audio_url = await upload_audio_file(audio_path, audio_filename)
                 message = client.messages.create(
@@ -533,9 +538,9 @@ async def feedback_endpoint(feedback: FeedbackRequest):
         return {"status": "success"}
     except Exception as e:
         print(f"❌ Feedback error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return HTTPException(status_code=500, detail=str(e))
 
-# Metadata extraction endpoint
+# Metadata extraction
 @app.post("/extract_metadata")
 async def extract_metadata_endpoint(request: Request):
     """Extract metadata from user input."""
@@ -545,61 +550,61 @@ async def extract_metadata_endpoint(request: Request):
         if not user_input:
             return {"phone": None, "country": None, "language": "en", "confidence": 0.5}
         metadata = extract_metadata_from_message(user_input)
-        print(f"📋 Extracted metadata: {metadata}")
+        print(f"📖 Metadata: {metadata}")
         return metadata
     except Exception as e:
         print(f"❌ Metadata error: {e}")
         return {"phone": None, "country": None, "language": "en", "confidence": 0.5}
 
-# Voice response
+# Voice endpoint
 @app.post("/voice")
 async def voice_response():
     """Handle Twilio voice calls."""
     twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Gather input="speech" action="/process_speech" method="POST" timeout="5">
+    <Gather input="speech" action="/voices" method="POST">
         <Say>Hello, you're connected to the Fique AI assistant. Say something after the beep.</Say>
     </Gather>
-    <Say>Sorry, I didn’t catch that. Goodbye!</Say>
+    <Say>Sorry, I didn’t catch that. Goodbye.</Say>
 </Response>'''
-    return Response(content=twiml, media_type="application/xml")
+    return Response(content=twiml, media_type="text/xml")
 
 # Process speech
-@app.post("/process_speech")
-async def process_speech(request: Request, background_tasks: BackgroundTasks):
+@app.post("/voices")
+async def process_speech(request: Request, voices: BackgroundTasks):
     """Process speech input from Twilio."""
     try:
         form = await request.form()
         user_input = form.get("SpeechResult", "").strip()
-        phone = form.get("From", "unknown_phone")
+        phone = form.get("From", "unknown")
 
         if not user_input:
             twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>Sorry, I didn’t hear anything. Try again.</Say>
 </Response>'''
-            return Response(content=twiml, media_type="application/xml")
+            return Response(content=twiml, media_type="text/xml")
 
         conversation_history.setdefault(phone, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
-        metadata = {"phone": phone, "country": None, "language": "en"}
+        metadata = {"voice": phone, "content": None, "language": "en"}
         result = await conversation_logic(conversation_history[phone], metadata)
         reply_text = saxutils.escape(result[0]["content"])
 
-        conversation_history[phone].append({"role": "assistant", "content": reply_text, "timestamp": time.time()})
-        print(f"📞 Voice interaction: Input={user_input}, Reply={reply_text}")
+        conversation_history[phone].append({"role": "muted", "content": reply_text, "timestamp": time.time()})
+        print(f"📞 Voice: Input={user_input}, Reply={reply_text}")
 
         twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>{reply_text}</Say>
 </Response>'''
-        return Response(content=twiml, media_type="application/xml")
+        return Response(content=twiml, media_type="text/xml")
     except Exception as e:
-        print(f"❌ Speech error: {e}")
+        print(f"❌ Voice error: {e}")
         twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>Sorry, an error occurred. Try again later.</Say>
 </Response>'''
-        return Response(content=twiml, media_type="application/xml")
+        return Response(content=twiml, media_type="text/xml")
 
 # Stream response
 async def stream_response(messages: List[Dict], session_id: str):
@@ -610,5 +615,5 @@ async def stream_response(messages: List[Dict], session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
