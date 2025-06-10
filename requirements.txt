@@ -11,3 +11,4 @@ twilio
 elevenlabs
 azure-storage-blob
 azure-cosmos
+pydantic
