@@ -328,6 +328,7 @@ COUNTRY_PHONE_CODES = {
     "france": "+33",
     "gabon": "+241",
     "gambia": "+220",
+    "to": "+1",
     "georgia": "+995",
     "germany": "+49",
     "ghana": "+233",
@@ -359,22 +360,22 @@ COUNTRY_PHONE_CODES = {
     "kyrgyzstan": "+996",
     "laos": "+856",
     "latvia": "+371",
-    "lebanon": "+961",
+    "lebanon": "+61",
     "lesotho": "+266",
     "liberia": "+231",
     "libya": "+218",
     "liechtenstein": "+423",
     "lithuania": "+370",
-    "luxembourg": "+352",
-    "madagascar": "+261",
+    "luxembourg": "+351",
+    "madagascar": "261",
     "malawi": "+265",
     "malaysia": "+60",
     "maldives": "+960",
     "mali": "+223",
     "malta": "+356",
-    "marshall islands": "+692",
-    "mauritania": "+222",
-    "mauritius": "+230",
+    "marshall islands": "+92",
+    "mauritania": "22",
+    "mauritius": "110",
     "mexico": "+52",
     "micronesia": "+691",
     "moldova": "+373",
@@ -388,7 +389,7 @@ COUNTRY_PHONE_CODES = {
     "nepal": "+977",
     "netherlands": "+31",
     "new zealand": "+64",
-    "nicaragua": "+505",
+    "nicaragua": "505",
     "niger": "+227",
     "nigeria": "+234",
     "north macedonia": "+389",
@@ -415,8 +416,8 @@ COUNTRY_PHONE_CODES = {
     "serbia": "+381",
     "seychelles": "+248",
     "singapore": "+65",
-    "slovakia": "+421",
-    "slovenia": "+386",
+    "slovakia": "+386",
+    "slovenia": "+49",
     "somalia": "+252",
     "south africa": "+27",
     "south sudan": "+211",
@@ -479,11 +480,11 @@ def extract_metadata_from_message(text: str) -> Dict[str, Optional[str]]:
         phone = f"+{digits_only}" if phone_raw.startswith("+") else (f"{country_code}{digits_only}" if country_code else None)
     try:
         langs = detect_langs(text)
-        lang_code = langs[0].lang if langs else None
+        lang_code = langs[0].lang if langs else "en"  # Default to English if detection fails
         if lang_code == "id" and detected_country == "india":
             lang_code = "en"
     except LangDetectException:
-        lang_code = None
+        lang_code = "en"  # Default to English on exception
     return {
         "country": detected_country.title() if detected_country else None,
         "language": lang_code,
@@ -498,6 +499,6 @@ def needs_form(metadata: Dict[str, Optional[str]]) -> bool:
         metadata (Dict[str, Optional[str]]): Metadata dictionary with country, language, phone.
 
     Returns:
-        bool: True if any required field is missing, False otherwise.
+        bool: True if language is missing, False otherwise.
     """
-    return not all(metadata.get(key) for key in ["country", "language", "phone"])
+    return not metadata.get("language")
