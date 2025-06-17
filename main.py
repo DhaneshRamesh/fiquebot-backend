@@ -26,7 +26,6 @@ import base64
 import logging
 from contextlib import AsyncExitStack
 import psutil
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -111,19 +110,22 @@ class FeedbackRequest(BaseModel):
     liked: bool
 
 # Cosmos DB initialization
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
-async def initialize_cosmos_db():
+def initialize_cosmos_db():
     try:
         client = CosmosClient(COSMOS_DB_ENDPOINT, COSMOS_DB_KEY)
-        database = await client.create_database_if_not_exists(id="ConversationsDB")
-        container = await database.create_container_if_not_exists(
+        database = client.create_database_if_not_exists(id="ConversationsDB")
+        container = database.create_container_if_not_exists(
             id="Conversations",
             partition_key=PartitionKey(path="/session_id"),
             offer_throughput=400
         )
         logger.info("Cosmos DB initialized: ConversationsDB/Conversations")
+        return database, container
     except exceptions.CosmosHttpResponseError as e:
-        logger.error(f"Cosmos DB initialization failed: {e}")
+        logger.error(f"Cosmos DB initialization failed: {e.message}, Status: {e.status_code}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected Cosmos DB initialization error: {str(e)}")
         raise
 
 # Startup checks
@@ -131,7 +133,7 @@ async def initialize_cosmos_db():
 async def startup_event():
     logger.info("Starting application...")
     try:
-        await initialize_cosmos_db()
+        initialize_cosmos_db()
         blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
         blob_service_client.get_service_properties()
         logger.info("Azure Blob Storage connection successful")
@@ -139,7 +141,7 @@ async def startup_event():
         mem_info = process.memory_info()
         logger.info(f"Memory usage: {mem_info.rss / 1024 / 1024:.2f} MB")
     except Exception as e:
-        logger.error(f"Startup check failed: {e}")
+        logger.error(f"Startup check failed: {str(e)}")
         raise
 
 # Cosmos DB utilities
@@ -156,7 +158,7 @@ async def get_conversation_history(session_id: str) -> List[Dict]:
         )]
         return items[0].get("messages", []) if items else []
     except Exception as e:
-        logger.error(f"Failed to fetch conversation history for {session_id}: {e}")
+        logger.error(f"Failed to fetch conversation history for {session_id}: {str(e)}")
         return []
 
 async def append_conversation_history(session_id: str, message: Dict):
@@ -173,7 +175,7 @@ async def append_conversation_history(session_id: str, message: Dict):
         })
         logger.info(f"Appended message to history for {session_id}")
     except Exception as e:
-        logger.error(f"Failed to append conversation history for {session_id}: {e}")
+        logger.error(f"Failed to append conversation history for {session_id}: {str(e)}")
 
 async def reset_conversation_history(session_id: str):
     try:
@@ -183,7 +185,7 @@ async def reset_conversation_history(session_id: str):
         await container.delete_item(item=session_id, partition_key=session_id)
         logger.info(f"Reset conversation history for {session_id}")
     except Exception as e:
-        logger.error(f"Failed to reset conversation history for {session_id}: {e}")
+        logger.error(f"Failed to reset conversation history for {session_id}: {str(e)}")
 
 # Encryption/Decryption utilities
 def is_valid_fernet_token(data: str) -> bool:
@@ -349,9 +351,15 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
     logger.info(f"Search results: {len(search_contexts)} articles")
 
     fallback_phrases = ["yes", "sure", "go ahead", "general", "try again", "okay", "continue"]
-    fallback_flag = any(
-        phrase in decrypt_data(m["content"]).lower() for m in messages[-2:] if m["role"] == "user"
-    )
+    fallback_flag = False
+    for m in messages[-2:]:
+        if m["role"] == "user":
+            try:
+                if any(phrase in decrypt_data(m["content"]).lower() for phrase in fallback_phrases):
+                    fallback_flag = True
+                    break
+            except HTTPException:
+                continue
 
     cleaned_messages = []
     for m in messages:
@@ -561,7 +569,7 @@ async def conversation_endpoint(request: Request):
         return StreamingResponse(stream_response(result, session_id), media_type="text/event-stream")
 
     except Exception as e:
-        logger.error(f"Conversation error: {e}")
+        logger.error(f"Conversation error: {str(e)}")
         response = [{"role": "assistant", "content": encrypt_data("⚠️ Error processing your message.")}]
         await append_conversation_history(session_id, response[0])
         return StreamingResponse(stream_response(response, session_id), media_type="text/event-stream")
