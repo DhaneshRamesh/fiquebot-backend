@@ -13,3 +13,5 @@ azure-storage-blob==12.23.1
 azure-cosmos==4.7.0
 pydantic==2.9.2
 cryptography==43.0.1
+psutil==6.1.0
+tenacity==9.0.0
