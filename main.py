@@ -20,6 +20,8 @@ import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 from cosmos_client import update_preferences
+from cryptography.fernet import Fernet, InvalidToken
+import base64
 
 # Load environment variables
 load_dotenv(dotenv_path=".env.production")
@@ -39,16 +41,20 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWA
 AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 COSMOS_DB_ENDPOINT = os.environ.get("COSMOS_DB_ENDPOINT")
 COSMOS_DB_KEY = os.environ.get("COSMOS_DB_KEY")
+FERNET_KEY = os.environ.get("FERNET_KEY")
 
 # Validate environment variables
 required_vars = [
     "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_KEY", "AZURE_OPENAI_MODEL",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "AZURE_STORAGE_CONNECTION_STRING",
-    "COSMOS_DB_ENDPOINT", "COSMOS_DB_KEY"
+    "COSMOS_DB_ENDPOINT", "COSMOS_DB_KEY", "FERNET_KEY"
 ]
 for var in required_vars:
     if not os.environ.get(var):
         raise EnvironmentError(f"Missing required environment variable: {var}")
+
+# Initialize Fernet for encryption
+fernet = Fernet(FERNET_KEY.encode())
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -82,6 +88,45 @@ class FeedbackRequest(BaseModel):
     user_id: str
     fact_id: str
     liked: bool
+
+# Encryption/Decryption utilities
+def encrypt_data(data: str) -> str:
+    """Encrypt string data using Fernet."""
+    try:
+        return fernet.encrypt(data.encode()).decode()
+    except Exception as e:
+        print(f"❌ Encryption error: {e}")
+        raise HTTPException(status_code=500, detail="Encryption failed")
+
+def decrypt_data(encrypted_data: str) -> str:
+    """Decrypt string data using Fernet."""
+    try:
+        return fernet.decrypt(encrypted_data.encode()).decode()
+    except InvalidToken:
+        print("❌ Decryption error: Invalid token")
+        raise HTTPException(status_code=400, detail="Invalid encrypted data")
+    except Exception as e:
+        print(f"❌ Decryption error: {e}")
+        raise HTTPException(status_code=500, detail="Decryption failed")
+
+def encrypt_binary(data: bytes) -> bytes:
+    """Encrypt binary data using Fernet."""
+    try:
+        return fernet.encrypt(data)
+    except Exception as e:
+        print(f"❌ Binary encryption error: {e}")
+        raise HTTPException(status_code=500, detail="Binary encryption failed")
+
+def decrypt_binary(encrypted_data: bytes) -> bytes:
+    """Decrypt binary data using Fernet."""
+    try:
+        return fernet.decrypt(encrypted_data)
+    except InvalidToken:
+        print("❌ Binary decryption error: Invalid token")
+        raise HTTPException(status_code=400, detail="Invalid encrypted binary data")
+    except Exception as e:
+        print(f"❌ Binary decryption error: {e}")
+        raise HTTPException(status_code=500, detail="Binary decryption failed")
 
 # Root endpoint
 @app.get("/")
@@ -118,7 +163,7 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
     try:
         if len([m for m in conversation_history if m["role"] == "user"]) < 2:
             return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
-        user_messages = [m["content"] for m in conversation_history if m["role"] == "user"][-5:]
+        user_messages = [decrypt_data(m["content"]) for m in conversation_history if m["role"] == "user"][-5:]
         openai_body = {
             "messages": [
                 {
@@ -152,7 +197,7 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
 async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]:
     """Process conversation with search and implicit liking."""
     session_id = metadata.get("phone", str(uuid.uuid4()))
-    user_question = messages[-1]["content"].strip().lower()
+    user_question = decrypt_data(messages[-1]["content"]).strip().lower()
     print(f"🗣️ Question: {user_question}")
 
     liking_data = await detect_implicit_liking(session_id, messages)
@@ -174,18 +219,18 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
 
     fallback_phrases = ["yes", "sure", "go ahead", "general", "try again", "okay", "continue"]
     fallback_flag = any(
-        phrase in m["content"].lower() for phrase in fallback_phrases
+        phrase in decrypt_data(m["content"]).lower() for phrase in fallback_phrases
         for m in messages[-2:] if m["role"] == "user"
     )
 
-    cleaned_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    cleaned_messages = [{"role": m["role"], "content": decrypt_data(m["content"])} for m in messages]
     response_content = ""
 
     if user_question in ["hi", "hello", "hey"]:
         response_content = f"{user_question.capitalize()}! How can I help you today? 💡 Curious about EMF sustainability?"
     elif not search_contexts and not fallback_flag:
         response_content = f"🤖 No articles found for '{keywords}'. Want a general answer? 💡 Or ask about EMF sustainability!"
-        return [{"role": "assistant", "content": response_content}]
+        return [{"role": "assistant", "content": encrypt_data(response_content)}]
     else:
         if search_contexts:
             context_block = "\n\n".join([f"{item['snippet']}\nSource: {item['title']} ({item['url']})" for item in search_contexts])
@@ -216,7 +261,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
 
     if liking_data["suggested_question"]:
         response_content += f"\n\n💡 Next question: {liking_data['suggested_question']}"
-    return [{"role": "assistant", "content": response_content}]
+    return [{"role": "assistant", "content": encrypt_data(response_content)}]
 
 # Feedback detection
 async def detect_feedback(user_input: str) -> Dict:
@@ -308,7 +353,7 @@ async def conversation_endpoint(request: Request):
 
         if not messages_data:
             return StreamingResponse(
-                stream_response([{"role": "assistant", "content": "👋 Hi! How can I help you today? 💡 Curious about EMF sustainability?"}], session_id),
+                stream_response([{"role": "assistant", "content": encrypt_data("👋 Hi! How can I help you today? 💡 Curious about EMF sustainability?")}], session_id),
                 media_type="text/event-stream"
             )
 
@@ -318,12 +363,12 @@ async def conversation_endpoint(request: Request):
         ]
         if not valid_messages:
             return StreamingResponse(
-                stream_response([{"role": "assistant", "content": "⚠️ Invalid message format."}], session_id),
+                stream_response([{"role": "assistant", "content": encrypt_data("⚠️ Invalid message format.")}], session_id),
                 media_type="text/event-stream"
             )
 
         conversation_history.setdefault(session_id, []).append(
-            {"role": "user", "content": valid_messages[-1].content, "timestamp": time.time()}
+            {"role": "user", "content": encrypt_data(valid_messages[-1].content), "timestamp": time.time()}
         )
         print(f"📜 History for {session_id}: {conversation_history[session_id]}")
 
@@ -332,7 +377,7 @@ async def conversation_endpoint(request: Request):
             "country": payload.get("country"),
             "language": payload.get("language", "en")
         }
-        all_user_text = " ".join(m.content for m in valid_messages if m.role == "user")
+        all_user_text = " ".join(decrypt_data(m.content) for m in valid_messages if m.role == "user")
 
         if not (metadata["phone"] and metadata["country"]) and not session_id.startswith("whatsapp:"):
             extracted = extract_metadata_from_message(all_user_text)
@@ -341,19 +386,24 @@ async def conversation_endpoint(request: Request):
                 "country": metadata["country"] or extracted["country"],
                 "language": metadata["language"] or extracted["language"] or "en"
             })
+            metadata = {
+                "phone": encrypt_data(metadata["phone"]) if metadata["phone"] else None,
+                "country": encrypt_data(metadata["country"]) if metadata["country"] else None,
+                "language": encrypt_data(metadata["language"]) if metadata["language"] else None
+            }
             print(f"✅ Metadata: {metadata}")
 
         if session_id.startswith("whatsapp:") and len(conversation_history[session_id]) == 1 and needs_form(metadata):
             return StreamingResponse(
-                stream_response([{"role": "assistant", "content": "⚠️ Please provide your language (e.g., English)."}], session_id),
+                stream_response([{"role": "assistant", "content": encrypt_data("⚠️ Please provide your language (e.g., English).")}], session_id),
                 media_type="text/event-stream"
             )
 
         if session_id.startswith("whatsapp:") and len(conversation_history[session_id]) == 2 and metadata["phone"]:
             response = {
                 "role": "assistant",
-                "content": (
-                    f"✅ Got it!\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}\n"
+                "content": encrypt_data(
+                    f"✅ Got it!\n- Language: {decrypt_data(metadata['language'])}\n- Phone: {decrypt_data(metadata['phone'])}\n"
                     f"📘 How can I help you today? 💡 Curious about EMF sustainability?"
                 )
             }
@@ -367,7 +417,7 @@ async def conversation_endpoint(request: Request):
     except Exception as e:
         print(f"❌ Conversation error: {e}")
         return StreamingResponse(
-            stream_response([{"role": "assistant", "content": "⚠️ Error processing your message."}], session_id),
+            stream_response([{"role": "assistant", "content": encrypt_data("⚠️ Error processing your message.")}], session_id),
             media_type="text/event-stream"
         )
 
@@ -382,27 +432,48 @@ async def cleanup_audio(audio_path: str, delay: int = 300):
 # Serve audio
 @app.get("/audio/{filename}")
 async def get_audio(filename: str):
+    """Serve decrypted audio file."""
     audio_path = os.path.join("static/audio", filename)
     if not os.path.exists(audio_path):
         print(f"❌ Audio not found: {audio_path}")
         raise HTTPException(status_code=404, detail="Audio not found")
-    print(f"🎵 Serving audio: {audio_path}")
-    return FileResponse(audio_path, media_type="audio/mpeg")
+    
+    try:
+        with open(audio_path, "rb") as f:
+            encrypted_audio = f.read()
+        decrypted_audio = decrypt_binary(encrypted_audio)
+        
+        temp_path = os.path.join("static/audio", f"temp_{filename}")
+        with open(temp_path, "wb") as f:
+            f.write(decrypted_audio)
+        
+        print(f"🎵 Serving decrypted audio: {temp_path}")
+        response = FileResponse(temp_path, media_type="audio/mpeg")
+        
+        asyncio.create_task(cleanup_audio(temp_path, delay=10))
+        return response
+    except Exception as e:
+        print(f"❌ Audio decryption error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to decrypt audio")
 
 # Upload audio
 async def upload_audio_file(audio_path: str, audio_filename: str) -> str:
-    """Upload audio to Azure Blob Storage."""
+    """Upload encrypted audio to Azure Blob Storage."""
     try:
         blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
         container_name = "audio-files"
         blob_client = blob_service_client.get_blob_client(container=container_name, blob=audio_filename)
+        
         with open(audio_path, "rb") as f:
-            blob_client.upload_blob(f, overwrite=True, content_settings=ContentSettings(content_type="audio/mpeg"))
+            audio_data = f.read()
+        encrypted_audio = encrypt_binary(audio_data)
+        
+        blob_client.upload_blob(encrypted_audio, overwrite=True, content_settings=ContentSettings(content_type="audio/mpeg"))
         public_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{audio_filename}"
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.head(public_url)
             response.raise_for_status()
-        print(f"📤 Uploaded audio: {public_url}")
+        print(f"📤 Uploaded encrypted audio: {public_url}")
         return public_url
     finally:
         blob_service_client.close()
@@ -431,7 +502,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                     None
                 )
                 if last_message:
-                    fact_id = await extract_fact_id(last_message)
+                    fact_id = await extract_fact_id(decrypt_data(last_message))
                     if fact_id:
                         feedback_processed, feedback_response = await process_feedback(From, fact_id, liked)
             elif fact_id and liked is not None:
@@ -451,7 +522,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                         None
                     )
                     if last_message:
-                        fact_id = await extract_fact_id(last_message)
+                        fact_id = await extract_fact_id(decrypt_data(last_message))
                         if fact_id:
                             feedback_processed, feedback_response = await process_feedback(From, fact_id, liked)
 
@@ -461,15 +532,16 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
                 print(f"✅ Reset history for {From}")
             return PlainTextResponse("✅ Conversation reset!")
 
-        conversation_history.setdefault(From, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
+        conversation_history.setdefault(From, []).append({"role": "user", "content": encrypt_data(user_input), "timestamp": time.time()})
 
-        metadata = {"phone": From, "country": None, "language": "en"}
-        text_reply = feedback_response if feedback_processed else (await conversation_logic(conversation_history[From], metadata))[0]["content"]
+        metadata = {"phone": encrypt_data(From), "country": None, "language": encrypt_data("en")}
+        text_reply = decrypt_data(feedback_response) if feedback_processed else (await conversation_logic(conversation_history[From], metadata))[0]["content"]
+        text_reply = decrypt_data(text_reply)
         if feedback_processed and user_input not in ["i like this", "i dont like this"]:
             result = await conversation_logic(conversation_history[From], metadata)
-            text_reply = f"{feedback_response}\n\n{result[0]['content']}"
+            text_reply = f"{feedback_response}\n\n{decrypt_data(result[0]['content'])}"
 
-        conversation_history[From].append({"role": "assistant", "content": text_reply, "timestamp": time.time()})
+        conversation_history[From].append({"role": "assistant", "content": encrypt_data(text_reply), "timestamp": time.time()})
 
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         voice_phrases = ["send voice", "reply in audio", "voice"]
@@ -548,13 +620,29 @@ async def extract_metadata_endpoint(request: Request):
         data = await request.json()
         user_input = data.get("text")
         if not user_input:
-            return {"phone": None, "country": None, "language": "en", "confidence": 0.5}
+            return {
+                "phone": None,
+                "country": None,
+                "language": encrypt_data("en"),
+                "confidence": 0.5
+            }
         metadata = extract_metadata_from_message(user_input)
-        print(f"📖 Metadata: {metadata}")
-        return metadata
+        encrypted_metadata = {
+            "phone": encrypt_data(metadata["phone"]) if metadata["phone"] else None,
+            "country": encrypt_data(metadata["country"]) if metadata["country"] else None,
+            "language": encrypt_data(metadata["language"]) if metadata["language"] else encrypt_data("en"),
+            "confidence": metadata.get("confidence", 0.5)
+        }
+        print(f"📖 Metadata: {encrypted_metadata}")
+        return encrypted_metadata
     except Exception as e:
         print(f"❌ Metadata error: {e}")
-        return {"phone": None, "country": None, "language": "en", "confidence": 0.5}
+        return {
+            "phone": None,
+            "country": None,
+            "language": encrypt_data("en"),
+            "confidence": 0.5
+        }
 
 # Voice endpoint
 @app.post("/voice")
@@ -585,12 +673,12 @@ async def process_speech(request: Request, voices: BackgroundTasks):
 </Response>'''
             return Response(content=twiml, media_type="text/xml")
 
-        conversation_history.setdefault(phone, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
-        metadata = {"voice": phone, "content": None, "language": "en"}
+        conversation_history.setdefault(phone, []).append({"role": "user", "content": encrypt_data(user_input), "timestamp": time.time()})
+        metadata = {"voice": encrypt_data(phone), "content": None, "language": encrypt_data("en")}
         result = await conversation_logic(conversation_history[phone], metadata)
-        reply_text = saxutils.escape(result[0]["content"])
+        reply_text = saxutils.escape(decrypt_data(result[0]["content"]))
 
-        conversation_history[phone].append({"role": "muted", "content": reply_text, "timestamp": time.time()})
+        conversation_history[phone].append({"role": "muted", "content": encrypt_data(reply_text), "timestamp": time.time()})
         print(f"📞 Voice: Input={user_input}, Reply={reply_text}")
 
         twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -609,7 +697,11 @@ async def process_speech(request: Request, voices: BackgroundTasks):
 # Stream response
 async def stream_response(messages: List[Dict], session_id: str):
     """Stream response as NDJSON."""
-    response_data = {"choices": [{"messages": messages}], "session_id": session_id}
+    decrypted_messages = [
+        {"role": m["role"], "content": decrypt_data(m["content"])}
+        for m in messages
+    ]
+    response_data = {"choices": [{"messages": decrypted_messages}], "session_id": session_id}
     yield json.dumps(response_data) + "\n"
     yield "\n"
 
