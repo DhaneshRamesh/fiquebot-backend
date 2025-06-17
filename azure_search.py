@@ -2,23 +2,15 @@ import os
 import requests
 from dotenv import load_dotenv
 from typing import List, Dict
-import logging
-from tenacity import retry, stop_after_attempt, wait_fixed
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-# Load environment variables
+# === Configuration ===
 load_dotenv()
 
-# Configuration
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "azureblob-index")
 
-# Search Functionality
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+# === Search Functionality ===
 def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[Dict]:
     """
     Search Azure Search index for articles matching the query.
@@ -32,10 +24,10 @@ def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[
         List[Dict]: List of articles with title, url, and snippet fields.
     """
     if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
-        logger.error("Missing Azure Search configuration")
+        print("❌ Missing Azure Search configuration")
         raise ValueError("Missing Azure Search configuration")
 
-    url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-11-01"
+    url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2021-04-30-Preview"
     headers = {
         "Content-Type": "application/json",
         "api-key": AZURE_SEARCH_KEY
@@ -52,7 +44,7 @@ def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[
         response.raise_for_status()
         results = response.json().get("value", [])
     except requests.exceptions.RequestException as e:
-        logger.error(f"Azure Search error: {e}")
+        print(f"❌ Azure Search error: {e}")
         return []
 
     filtered = []
@@ -70,5 +62,6 @@ def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[
                 "snippet": snippet
             })
 
-    logger.info(f"Search query: {query}, Articles returned: {len(filtered)}")
+    print(f"🔍 Search query: {query}")
+    print(f"✅ Articles returned: {len(filtered)}")
     return filtered
