@@ -1,67 +1,74 @@
 import os
-   import requests
-   from dotenv import load_dotenv
-   from typing import List, Dict
+import requests
+from dotenv import load_dotenv
+from typing import List, Dict
+import logging
+from tenacity import retry, stop_after_attempt, wait_fixed
 
-   # === Configuration ===
-   load_dotenv()
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-   AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
-   AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
-   AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "azureblob-index")
+# Load environment variables
+load_dotenv()
 
-   # === Search Functionality ===
-   def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[Dict]:
-       """
-       Search Azure Search index for articles matching the query.
+# Configuration
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "azureblob-index")
 
-       Args:
-           query (str): Search query string.
-           top_k (int): Maximum number of results to return (default: 3).
-           min_score (float): Minimum relevance score for results (default: 0.4).
+# Search Functionality
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[Dict]:
+    """
+    Search Azure Search index for articles matching the query.
 
-       Returns:
-           List[Dict]: List of articles with title, url, and snippet fields.
-       """
-       if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
-           print("❌ Missing Azure Search configuration")
-           raise ValueError("Missing Azure Search configuration")
+    Args:
+        query (str): Search query string.
+        top_k (int): Maximum number of results to return (default: 3).
+        min_score (float): Minimum relevance score for results (default: 0.4).
 
-       url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2021-04-30-Preview"
-       headers = {
-           "Content-Type": "application/json",
-           "api-key": AZURE_SEARCH_KEY
-       }
-       body = {
-           "search": query,
-           "top": top_k,
-           "queryType": "simple",
-           "searchMode": "any"
-       }
+    Returns:
+        List[Dict]: List of articles with title, url, and snippet fields.
+    """
+    if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
+        logger.error("Missing Azure Search configuration")
+        raise ValueError("Missing Azure Search configuration")
 
-       try:
-           response = requests.post(url, headers=headers, json=body)
-           response.raise_for_status()
-           results = response.json().get("value", [])
-       except requests.exceptions.RequestException as e:
-           print(f"❌ Azure Search error: {e}")
-           return []
+    url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-11-01"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": AZURE_SEARCH_KEY
+    }
+    body = {
+        "search": query,
+        "top": top_k,
+        "queryType": "simple",
+        "searchMode": "any"
+    }
 
-       filtered = []
-       for doc in results:
-           content = doc.get("article_content") or doc.get("content")
-           title = doc.get("title", "Untitled")
-           url = doc.get("url") or "#"
-           score = doc.get("@search.score", 0)
+    try:
+        response = requests.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        results = response.json().get("value", [])
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Azure Search error: {e}")
+        return []
 
-           if content and score >= min_score:
-               snippet = content[:500] + "..." if len(content) > 500 else content
-               filtered.append({
-                   "title": title,
-                   "url": url,
-                   "snippet": snippet
-               })
+    filtered = []
+    for doc in results:
+        content = doc.get("article_content") or doc.get("content")
+        title = doc.get("title", "Untitled")
+        url = doc.get("url") or "#"
+        score = doc.get("@search.score", 0)
 
-       print(f"🔍 Search query: {query}")
-       print(f"✅ Articles returned: {len(filtered)}")
-       return filtered
+        if content and score >= min_score:
+            snippet = content[:500] + "..." if len(content) > 500 else content
+            filtered.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet
+            })
+
+    logger.info(f"Search query: {query}, Articles returned: {len(filtered)}")
+    return filtered
