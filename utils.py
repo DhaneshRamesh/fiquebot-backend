@@ -467,7 +467,7 @@ def extract_metadata_from_message(text: str) -> Dict[str, Optional[str]]:
         text (str): User input text.
 
     Returns:
-        Dict[str, Optional[str]]: Dictionary with country, language, and phone.
+        Dict[str, Optional[str]]: Dictionary with country, language, phone, and confidence.
     """
     text_lower = text.lower()
     detected_country = next((k for k in COUNTRY_PHONE_CODES if k in text_lower), None)
@@ -483,12 +483,15 @@ def extract_metadata_from_message(text: str) -> Dict[str, Optional[str]]:
         lang_code = langs[0].lang if langs else "en"  # Default to English if detection fails
         if lang_code == "id" and detected_country == "india":
             lang_code = "en"
+        confidence = langs[0].prob if langs else 0.5  # Use detection probability as confidence
     except LangDetectException:
-        lang_code = "en"  # Default to English on exception
+        lang_code = "en"
+        confidence = 0.5
     return {
         "country": detected_country.title() if detected_country else None,
         "language": lang_code,
-        "phone": phone
+        "phone": phone,
+        "confidence": confidence
     }
 
 def needs_form(metadata: Dict[str, Optional[str]]) -> bool:
