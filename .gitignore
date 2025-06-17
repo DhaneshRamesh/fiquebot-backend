@@ -1,0 +1,13 @@
+.env
+.env.production
+static/audio/*
+pycache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.idea/
+.vscode/
+*.log
