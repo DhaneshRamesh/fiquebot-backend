@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,7 @@ import asyncio
 from dotenv import load_dotenv
 from twilio.rest import Client
 from azure.storage.blob import BlobServiceClient, ContentSettings
-from azure.cosmos import CosmosClient, PartitionKey
+from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from utils import extract_metadata_from_message, needs_form
 import xml.sax.saxutils as saxutils
 from elevenlabs.client import ElevenLabs
@@ -23,6 +25,8 @@ from cryptography.fernet import Fernet, InvalidToken
 import base64
 import logging
 from contextlib import AsyncExitStack
+import psutil
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -58,10 +62,15 @@ required_vars = [
 ]
 for var in required_vars:
     if not os.environ.get(var):
+        logger.error(f"Missing required environment variable: {var}")
         raise EnvironmentError(f"Missing required environment variable: {var}")
 
 # Initialize Fernet for encryption
-fernet = Fernet(FERNET_KEY.encode())
+try:
+    fernet = Fernet(FERNET_KEY.encode())
+except Exception as e:
+    logger.error(f"Invalid FERNET_KEY: {e}")
+    raise EnvironmentError("Invalid FERNET_KEY")
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -100,6 +109,38 @@ class FeedbackRequest(BaseModel):
     user_id: str
     fact_id: str
     liked: bool
+
+# Cosmos DB initialization
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+async def initialize_cosmos_db():
+    try:
+        client = CosmosClient(COSMOS_DB_ENDPOINT, COSMOS_DB_KEY)
+        database = await client.create_database_if_not_exists(id="ConversationsDB")
+        container = await database.create_container_if_not_exists(
+            id="Conversations",
+            partition_key=PartitionKey(path="/session_id"),
+            offer_throughput=400
+        )
+        logger.info("Cosmos DB initialized: ConversationsDB/Conversations")
+    except exceptions.CosmosHttpResponseError as e:
+        logger.error(f"Cosmos DB initialization failed: {e}")
+        raise
+
+# Startup checks
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting application...")
+    try:
+        await initialize_cosmos_db()
+        blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+        blob_service_client.get_service_properties()
+        logger.info("Azure Blob Storage connection successful")
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        logger.info(f"Memory usage: {mem_info.rss / 1024 / 1024:.2f} MB")
+    except Exception as e:
+        logger.error(f"Startup check failed: {e}")
+        raise
 
 # Cosmos DB utilities
 async def get_conversation_history(session_id: str) -> List[Dict]:
@@ -145,6 +186,14 @@ async def reset_conversation_history(session_id: str):
         logger.error(f"Failed to reset conversation history for {session_id}: {e}")
 
 # Encryption/Decryption utilities
+def is_valid_fernet_token(data: str) -> bool:
+    try:
+        fernet.decrypt(data.encode())
+        return True
+    except InvalidToken:
+        logger.debug(f"Invalid Fernet token: {data[:50]}...")
+        return False
+
 def encrypt_data(data: str) -> str:
     try:
         return fernet.encrypt(data.encode()).decode()
@@ -153,10 +202,13 @@ def encrypt_data(data: str) -> str:
         raise HTTPException(status_code=500, detail="Encryption failed")
 
 def decrypt_data(encrypted_data: str) -> str:
+    if not is_valid_fernet_token(encrypted_data):
+        logger.error(f"Invalid Fernet token: {encrypted_data[:50]}...")
+        raise HTTPException(status_code=400, detail="Invalid encrypted data")
     try:
         return fernet.decrypt(encrypted_data.encode()).decode()
     except InvalidToken:
-        logger.error("Decryption error: Invalid token")
+        logger.error(f"Decryption error: Invalid token for {encrypted_data[:50]}...")
         raise HTTPException(status_code=400, detail="Invalid encrypted data")
     except Exception as e:
         logger.error(f"Decryption error: {e}")
@@ -186,9 +238,16 @@ def normalize_metadata(metadata: Dict) -> Dict:
         "language": encrypt_data(metadata["language"]) if metadata.get("language") and not metadata["language"].startswith("enc:") else metadata.get("language")
     }
 
-# Root endpoint
-@app.get("/")
-async def root():
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "dependencies": ["azure", "twilio", "cosmos"]}
+
+# Root endpoint with HEAD support
+@app.route("/", methods=["GET", "HEAD"])
+async def root(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200)
     return {"message": "Backend online!"}
 
 # Audio transcription
@@ -219,7 +278,15 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
     try:
         if len([m for m in conversation_history if m["role"] == "user"]) < 2:
             return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
-        user_messages = [decrypt_data(m["content"]) for m in conversation_history if m["role"] == "user"][-5:]
+        user_messages = []
+        for m in conversation_history[-5:]:
+            if m["role"] == "user":
+                try:
+                    user_messages.append(decrypt_data(m["content"]))
+                except HTTPException:
+                    continue
+        if not user_messages:
+            return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
         openai_body = {
             "messages": [
                 {
@@ -252,7 +319,10 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
 # Conversation logic
 async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]:
     session_id = metadata.get("phone", str(uuid.uuid4()))
-    user_question = decrypt_data(messages[-1]["content"]).strip().lower()
+    try:
+        user_question = decrypt_data(messages[-1]["content"]).strip().lower()
+    except HTTPException:
+        return [{"role": "assistant", "content": encrypt_data("⚠️ Invalid message format. Please try again.")}]
     logger.info(f"Processing question: {user_question}")
 
     liking_data = await detect_implicit_liking(session_id, messages)
@@ -271,16 +341,25 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
 
     keywords = extract_keywords(user_question)
     from azure_search import search_articles
-    search_contexts = search_articles(keywords) or []
+    try:
+        search_contexts = search_articles(keywords) or []
+    except ValueError as e:
+        logger.error(f"Search configuration error: {e}")
+        search_contexts = []
     logger.info(f"Search results: {len(search_contexts)} articles")
 
     fallback_phrases = ["yes", "sure", "go ahead", "general", "try again", "okay", "continue"]
     fallback_flag = any(
-        phrase in decrypt_data(m["content"]).lower() for phrase in fallback_phrases
-        for m in messages[-2:] if m["role"] == "user"
+        phrase in decrypt_data(m["content"]).lower() for m in messages[-2:] if m["role"] == "user"
     )
 
-    cleaned_messages = [{"role": m["role"], "content": decrypt_data(m["content"])} for m in messages]
+    cleaned_messages = []
+    for m in messages:
+        try:
+            cleaned_messages.append({"role": m["role"], "content": decrypt_data(m["content"])})
+        except HTTPException:
+            continue
+
     response_content = ""
 
     if user_question in ["hi", "hello", "hey"]:
@@ -300,13 +379,18 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
         headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
         body = {"messages": cleaned_messages, "temperature": 0.7, "max_tokens": 500, "stream": False}
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await client.post(
-                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
-                headers=headers,
-                json=body
-            )
-            response.raise_for_status()
-            result = response.json()
+            try:
+                response = await client.post(
+                    f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}",
+                    headers=headers,
+                    json=body
+                )
+                response.raise_for_status()
+                result = response.json()
+            except Exception as e:
+                logger.error(f"OpenAI API error: {e}")
+                response_content = "⚠️ Couldn’t generate a response. 💡 Try asking about EMF sustainability!"
+                return [{"role": "assistant", "content": encrypt_data(response_content)}]
 
         if not result.get("choices"):
             response_content = "⚠️ Couldn’t generate a response. 💡 Try asking about EMF sustainability!"
@@ -400,7 +484,6 @@ async def process_feedback(user_id: str, fact_id: str, liked: bool) -> tuple[boo
 @app.post("/conversation")
 async def conversation_endpoint(request: Request):
     try:
-        # Basic rate limiting
         client_ip = request.client.host
         current_time = time.time()
         if client_ip in request_counts:
@@ -424,16 +507,20 @@ async def conversation_endpoint(request: Request):
             await append_conversation_history(session_id, response[0])
             return StreamingResponse(stream_response(response, session_id), media_type="text/event-stream")
 
-        valid_messages = [
-            Message(role=msg["role"], content=msg["content"])
-            for msg in messages_data if isinstance(msg, dict) and msg.get("role") and msg.get("content")
-        ]
+        valid_messages = []
+        for msg in messages_data:
+            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
+                if is_valid_fernet_token(msg["content"]):
+                    valid_messages.append(Message(role=msg["role"], content=msg["content"]))
+                else:
+                    logger.warning(f"Skipping invalid message: {msg['content'][:50]}...")
+        
         if not valid_messages:
-            response = [{"role": "assistant", "content": encrypt_data("⚠️ Invalid message format.")}]
+            response = [{"role": "assistant", "content": encrypt_data("⚠️ Invalid message format or encryption.")}]
             await append_conversation_history(session_id, response[0])
             return StreamingResponse(stream_response(response, session_id), media_type="text/event-stream")
 
-        await append_conversation_history(session_id, {"role": "user", "content": encrypt_data(valid_messages[-1].content), "timestamp": time.time()})
+        await append_conversation_history(session_id, {"role": "user", "content": valid_messages[-1].content, "timestamp": time.time()})
 
         metadata = normalize_metadata({
             "phone": payload.get("phone"),
