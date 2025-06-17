@@ -114,12 +114,12 @@ def initialize_cosmos_db():
     try:
         client = CosmosClient(COSMOS_DB_ENDPOINT, COSMOS_DB_KEY)
         database = client.create_database_if_not_exists(id="ConversationsDB")
+        logger.info("Cosmos DB database checked/created: ConversationsDB")
         container = database.create_container_if_not_exists(
             id="Conversations",
-            partition_key=PartitionKey(path="/session_id"),
-            offer_throughput=400
+            partition_key=PartitionKey(path="/session_id")
         )
-        logger.info("Cosmos DB initialized: ConversationsDB/Conversations")
+        logger.info("Cosmos DB container checked/created: Conversations")
         return database, container
     except exceptions.CosmosHttpResponseError as e:
         logger.error(f"Cosmos DB initialization failed: {e.message}, Status: {e.status_code}")
