@@ -1,37 +1,67 @@
-from azure.cosmos import CosmosClient
 import os
-import uuid
-import time
+import requests
+from dotenv import load_dotenv
+from typing import List, Dict
 
-def update_preferences(user_id: str, fact_id: str, liked: bool, confidence: float = 1.0) -> None:
+# === Configuration ===
+load_dotenv()
+
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "azureblob-index")
+
+# === Search Functionality ===
+def search_articles(query: str, top_k: int = 3, min_score: float = 0.4) -> List[Dict]:
     """
-    Update user preferences in Cosmos DB with liking information.
+    Search Azure Search index for articles matching the query.
 
     Args:
-        user_id (str): The user's ID (e.g., WhatsApp number).
-        fact_id (str): The ID of the fact being liked or disliked.
-        liked (bool): Whether the user liked (True) or disliked (False) the fact.
-        confidence (float): Confidence score for implicit liking (default 1.0 for explicit).
+        query (str): Search query string.
+        top_k (int): Maximum number of results to return (default: 3).
+        min_score (float): Minimum relevance score for results (default: 0.4).
+
+    Returns:
+        List[Dict]: List of articles with title, url, and snippet fields.
     """
+    if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
+        print("❌ Missing Azure Search configuration")
+        raise ValueError("Missing Azure Search configuration")
+
+    url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2021-04-30-Preview"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": AZURE_SEARCH_KEY
+    }
+    body = {
+        "search": query,
+        "top": top_k,
+        "queryType": "simple",
+        "searchMode": "any"
+    }
+
     try:
-        client = CosmosClient(os.environ["COSMOS_DB_ENDPOINT"], os.environ["COSMOS_DB_KEY"])
-        database = client.get_database_client("FiqueDB")
-        container = database.get_container_client("Preferences")
-        
-        # Generate a unique ID for the preference entry
-        preference_id = f"{user_id}_{fact_id}_{str(uuid.uuid4())}"
-        
-        # Create or update preference entry
-        preference = {
-            "id": preference_id,
-            "user_id": user_id,
-            "fact_id": fact_id,
-            "liked": liked,
-            "confidence": confidence,
-            "timestamp": int(time.time())
-        }
-        container.upsert_item(preference)
-        print(f"✅ Updated preference for user {user_id}: fact_id={fact_id}, liked={liked}, confidence={confidence}")
-    except Exception as e:
-        print(f"❌ Error updating preferences: {str(e)}")
-        raise
+        response = requests.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        results = response.json().get("value", [])
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Azure Search error: {e}")
+        return []
+
+    filtered = []
+    for doc in results:
+        content = doc.get("article_content") or doc.get("content")
+        title = doc.get("title", "Untitled")
+        url = doc.get("url") or "#"
+        score = doc.get("@search.score", 0)
+
+        if content and score >= min_score:
+            snippet = content[:500] + "..." if len(content) > 500 else content
+            filtered.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet
+            })
+
+    print(f"🔍 Search query: {query}")
+    print(f"✅ Articles returned: {len(filtered)}")
+    return filtered
