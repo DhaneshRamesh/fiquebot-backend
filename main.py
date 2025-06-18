@@ -178,7 +178,14 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
                 json=openai_body
             )
             response.raise_for_status()
-            return json.loads(response.json()["choices"][0]["message"]["content"])
+            response_data = response.json()
+            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            print(f"🧠 OpenAI response: {content[:50]}...")
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as je:
+                print(f"❌ JSON parse error: {je}, raw content: {content[:100]}...")
+                return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
     except Exception as e:
         print(f"❌ Implicit liking error: {e}")
         return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
@@ -509,7 +516,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         is_voice_request = any(phrase in decrypt_message(user_input).lower() for phrase in voice_phrases) if user_input else False
 
         if (is_voice_request or media_url) and ELEVENLABS_API_KEY:
-            text_reply_decrypted = decrypt_message(text_reply)[:500].strip()
+            text_reply_decrypted = decrypt_message(text_reply)[:500].strip()  # Limit to 500 chars for audio
             try:
                 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
                 audio_dir = os.path.join("static", "audio")
@@ -541,14 +548,14 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             except Exception as e:
                 print(f"❌ Audio error: {e}")
                 message = client.messages.create(
-                    body=text_reply_decrypted,
+                    body=text_reply_decrypted[:1600],  # Truncate to 1600 chars
                     from_=TWILIO_PHONE_NUMBER,
                     to=From
                 )
                 print(f"✅ Fallback text sent: SID={message.sid}")
         else:
             message = client.messages.create(
-                body=decrypt_message(text_reply),
+                body=decrypt_message(text_reply)[:1600],  # Truncate to 1600 chars
                 from_=TWILIO_PHONE_NUMBER,
                 to=From
             )
