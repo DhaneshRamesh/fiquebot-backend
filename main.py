@@ -38,7 +38,7 @@ COSMOS_DB_ENDPOINT = os.environ.get("COSMOS_DB_ENDPOINT")
 COSMOS_DB_KEY = os.environ.get("COSMOS_DB_KEY")
 
 # Hardcoded Fernet key for encryption (valid 32-byte, URL-safe base64-encoded)
-HARDCODED_KEY = "fAjiHCx_TCHASpT8xVAL3EDiq17cuXn4nVubAvEownI="
+HARDCODED_KEY = "3K8vL2mP7nQ4rT9wX6yZ1aB5cF0gH3jI="
 fernet = Fernet(HARDCODED_KEY)
 
 # Validate environment variables
@@ -193,9 +193,7 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
         return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
 
 # Conversation logic
-async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]:
-    session_id = metadata.get("phone", str(uuid.uuid4()))
-    user_question = decrypt_message(messages[-1]["content"]).strip().lower()
+async def conversation_logic(messages: List[Dict], metadata: Dict, session_id: str) -> List[Dict]:
     print(f"🗣️ Question received for session: {session_id}")
 
     liking_data = await detect_implicit_liking(session_id, messages)
@@ -211,6 +209,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
         stopwords = {"the", "of", "and", "in", "on", "is", "to", "a", "about"}
         return " ".join([w for w in words if w not in stopwords][:4])
 
+    user_question = decrypt_message(messages[-1]["content"]).strip().lower()
     keywords = extract_keywords(user_question)
     search_contexts = search_articles(keywords) or []
     print(f"🔍 Search results: {len(search_contexts)} articles")
@@ -225,18 +224,18 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
     response_content = ""
 
     if user_question in ["hi", "hello", "hey"]:
-        response_content = f"{user_question.capitalize()}! How can I help you today? 💡 Curious about EMF sustainability?"
+        response_content = f"{user_question.capitalize()}! Hey, what's up? Curious about EMF sustainability? 😎"
     elif not search_contexts and not fallback_flag:
-        response_content = f"🤖 No articles found for '{keywords}'. Want a general answer? 💡 Or ask about EMF sustainability!"
+        response_content = f"🤖 Yo, no articles found for that search. Want a general answer or something about EMF sustainability? 😎"
         return [{"role": "assistant", "content": encrypt_message(response_content)}]
     else:
         if search_contexts:
             context_block = "\n\n".join([f"{item['snippet']}\nSource: {item['title']} ({item['url']})" for item in search_contexts])
             cleaned_messages[-1]["content"] = (
-                f"Answer conversationally, citing sources where relevant. Focus on EMF context if applicable:\n\n{context_block}\n\nQuestion: {user_question}"
+                f"Answer conversationally like a cool friend, citing sources where relevant. Focus on EMF context if applicable:\n\n{context_block}\n\nQuestion: {user_question}"
             )
         else:
-            cleaned_messages[-1]["content"] = f"Answer conversationally, focusing on EMF context if relevant: {user_question}"
+            cleaned_messages[-1]["content"] = f"Answer conversationally like a cool friend, focusing on EMF context if relevant: {user_question}"
 
         headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
         body = {"messages": cleaned_messages, "temperature": 0.7, "max_tokens": 500, "stream": False}
@@ -250,7 +249,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
             result = response.json()
 
         if not result.get("choices"):
-            response_content = "⚠️ Couldn’t generate a response. 💡 Try asking about EMF sustainability!"
+            response_content = "⚠️ Yo, couldn't generate a response. Try asking about EMF sustainability! 😎"
         else:
             response_content = result["choices"][0]["message"]["content"]
             if search_contexts:
@@ -258,7 +257,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
                 response_content += f"\n\n**Sources**:\n{source_links}"
 
     if liking_data["suggested_question"]:
-        response_content += f"\n\n💡 Next question: {liking_data['suggested_question']}"
+        response_content += f"\n\n💡 Wanna ask: {liking_data['suggested_question']} 😎"
     return [{"role": "assistant", "content": encrypt_message(response_content)}]
 
 # Feedback detection
@@ -343,10 +342,10 @@ async def conversation_endpoint(request: Request):
         payload = await request.json()
         messages_data = payload.get("messages", [])
         session_id = payload.get("session_id", str(uuid.uuid4()))
-        print(f"📩 Payload: {json.dumps(payload)[:50]}..., Session: {session_id}")
+        print(f"📩 Payload received, Session: {session_id}")
 
         if not messages_data:
-            response_content = "👋 Hi! How can I help you today? 💡 Curious about EMF sustainability?"
+            response_content = "👋 Yo, what's good? Curious about EMF sustainability? 😎"
             return StreamingResponse(
                 stream_response([{"role": "assistant", "content": encrypt_message(response_content)}], session_id),
                 media_type="text/event-stream"
@@ -357,7 +356,7 @@ async def conversation_endpoint(request: Request):
             for msg in messages_data if isinstance(msg, dict) and msg.get("role") and msg.get("content")
         ]
         if not valid_messages:
-            response_content = "⚠️ Invalid message format."
+            response_content = "⚠️ Yo, that message format ain't right. Try again! 😎"
             return StreamingResponse(
                 stream_response([{"role": "assistant", "content": encrypt_message(response_content)}], session_id),
                 media_type="text/event-stream"
@@ -385,7 +384,7 @@ async def conversation_endpoint(request: Request):
             print(f"✅ Metadata: {metadata}")
 
         if session_id.startswith("whatsapp:") and len(conversation_history[session_id]) == 1 and needs_form(metadata):
-            response_content = "⚠️ Please provide your language (e.g., English)."
+            response_content = "⚠️ Yo, drop your language (e.g., English) first! 😎"
             return StreamingResponse(
                 stream_response([{"role": "assistant", "content": encrypt_message(response_content)}], session_id),
                 media_type="text/event-stream"
@@ -393,19 +392,19 @@ async def conversation_endpoint(request: Request):
 
         if session_id.startswith("whatsapp:") and len(conversation_history[session_id]) == 2 and metadata["phone"]:
             response_content = (
-                f"✅ Got it!\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}\n"
-                f"📘 How can I help you today? 💡 Curious about EMF sustainability?"
+                f"✅ Got it, bro!\n- Language: {metadata['language']}\n- Phone: {metadata['phone']}\n"
+                f"📘 What's next? Curious about EMF sustainability? 😎"
             )
             conversation_history[session_id].append({"role": "assistant", "content": encrypt_message(response_content), "timestamp": time.time()})
             return StreamingResponse(stream_response([{"role": "assistant", "content": encrypt_message(response_content)}], session_id), media_type="text/event-stream")
 
-        result = await conversation_logic(conversation_history[session_id], metadata)
+        result = await conversation_logic(conversation_history[session_id], metadata, session_id)
         conversation_history[session_id].append({"role": "assistant", "content": result[0]["content"], "timestamp": time.time()})
         return StreamingResponse(stream_response([{"role": "assistant", "content": decrypt_message(result[0]["content"])}], session_id), media_type="text/event-stream")
 
     except Exception as e:
         print(f"❌ Conversation error: {e}")
-        response_content = "⚠️ Error processing your message."
+        response_content = "⚠️ Yo, something broke. Try again! 😎"
         return StreamingResponse(
             stream_response([{"role": "assistant", "content": encrypt_message(response_content)}], session_id),
             media_type="text/event-stream"
@@ -505,9 +504,9 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
             conversation_history.setdefault(From, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
 
         metadata = {"phone": From, "country": None, "language": "en"}
-        text_reply = encrypt_message(feedback_response) if feedback_processed else (await conversation_logic(conversation_history[From], metadata))[0]["content"] if user_input else encrypt_message("Please send a message or audio.")
+        text_reply = encrypt_message(feedback_response) if feedback_processed else (await conversation_logic(conversation_history[From], metadata, From))[0]["content"] if user_input else encrypt_message("Yo, send a message or audio! 😎")
         if feedback_processed and user_input and decrypt_message(user_input) not in ["i like this", "i dont like this"]:
-            result = await conversation_logic(conversation_history[From], metadata)
+            result = await conversation_logic(conversation_history[From], metadata, From)
             text_reply = encrypt_message(f"{decrypt_message(text_reply)}\n\n{decrypt_message(result[0]['content'])}")
 
         if user_input:
@@ -602,9 +601,9 @@ async def voice_response():
     twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Gather input="speech" action="/voices" method="POST">
-        <Say>Hello, you're connected to the Fique AI assistant. Say something after the beep.</Say>
+        <Say>Yo, what's good? You're connected to the Fique AI assistant. Say something after the beep! 😎</Say>
     </Gather>
-    <Say>Sorry, I didn’t catch that. Goodbye.</Say>
+    <Say>Sorry, didn't catch that. Peace out! 😎</Say>
 </Response>'''
     return Response(content=twiml, media_type="text/xml")
 
@@ -620,13 +619,13 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
         if not user_input:
             twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Sorry, I didn’t hear anything. Try again.</Say>
+    <Say>Yo, didn't hear anything. Try again! 😎</Say>
 </Response>'''
             return Response(content=twiml, media_type="text/xml")
 
         conversation_history.setdefault(phone, []).append({"role": "user", "content": user_input, "timestamp": time.time()})
         metadata = {"phone": phone, "country": None, "language": "en"}
-        result = await conversation_logic(conversation_history[phone], metadata)
+        result = await conversation_logic(conversation_history[phone], metadata, phone)
         reply_text = saxutils.escape(decrypt_message(result[0]["content"]))
 
         conversation_history[phone].append({"role": "assistant", "content": result[0]["content"], "timestamp": time.time()})
@@ -641,7 +640,7 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
         print(f"❌ Voice error: {e}")
         twiml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Sorry, an error occurred. Try again later.</Say>
+    <Say>Yo, something broke. Try again later! 😎</Say>
 </Response>'''
         return Response(content=twiml, media_type="text/xml")
 
