@@ -38,7 +38,7 @@ COSMOS_DB_ENDPOINT = os.environ.get("COSMOS_DB_ENDPOINT")
 COSMOS_DB_KEY = os.environ.get("COSMOS_DB_KEY")
 
 # Hardcoded Fernet key for encryption (valid 32-byte, URL-safe base64-encoded)
-HARDCODED_KEY = "3K8vL2mP7nQ4rT9wX6yZ1aB5cF0gH3jI="
+HARDCODED_KEY = "tcv0t8FioiAGdvlLrxKoMLEGPvCJmUgaf6p534bE3BU="
 fernet = Fernet(HARDCODED_KEY)
 
 # Validate environment variables
