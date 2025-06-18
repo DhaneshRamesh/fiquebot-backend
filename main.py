@@ -37,7 +37,7 @@ AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRIN
 COSMOS_DB_ENDPOINT = os.environ.get("COSMOS_DB_ENDPOINT")
 COSMOS_DB_KEY = os.environ.get("COSMOS_DB_KEY")
 
-# Hardcoded Fernet key for encryption (not blocked by Render)
+# Hardcoded Fernet key for encryption (valid 32-byte, URL-safe base64-encoded)
 HARDCODED_KEY = "fAjiHCx_TCHASpT8xVAL3EDiq17cuXn4nVubAvEownI="
 fernet = Fernet(HARDCODED_KEY)
 
@@ -97,7 +97,6 @@ def encrypt_message(message: str) -> str:
 def decrypt_message(encrypted_message: str) -> str:
     try:
         decrypted = fernet.decrypt(encrypted_message.encode()).decode()
-        print(f"🔓 Decrypted message: {decrypted[:20]}...")
         return decrypted
     except Exception as e:
         print(f"❌ Decryption error: {e}")
@@ -188,7 +187,7 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
 async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]:
     session_id = metadata.get("phone", str(uuid.uuid4()))
     user_question = decrypt_message(messages[-1]["content"]).strip().lower()
-    print(f"🗣️ Question: {user_question}")
+    print(f"🗣️ Question received for session: {session_id}")
 
     liking_data = await detect_implicit_liking(session_id, messages)
     if liking_data["is_liked"] and liking_data["fact_id"]:
@@ -246,7 +245,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
         else:
             response_content = result["choices"][0]["message"]["content"]
             if search_contexts:
-                source_links = "\n".join([f"- [{item['title']}]({item['url']})" for item in search_contexts])
+                source_links = "\n\n".join([f"- [{item['title']}]({item['url']})" for item in search_contexts])
                 response_content += f"\n\n**Sources**:\n{source_links}"
 
     if liking_data["suggested_question"]:
@@ -255,7 +254,7 @@ async def conversation_logic(messages: List[Dict], metadata: Dict) -> List[Dict]
 
 # Feedback detection
 async def detect_feedback(user_input: str) -> Dict:
-    print(f"🧠 Detecting feedback: {user_input[:20]}...")
+    print(f"🧠 Detecting feedback for input")
     try:
         openai_body = {
             "messages": [
@@ -289,7 +288,7 @@ async def detect_feedback(user_input: str) -> Dict:
 
 # Fact ID extraction
 async def extract_fact_id(previous_message: str) -> Optional[str]:
-    print(f"🧠 Extracting fact_id: {previous_message[:20]}...")
+    print(f"🧠 Extracting fact_id")
     try:
         openai_body = {
             "messages": [
@@ -448,7 +447,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         user_input = encrypt_message(Body.strip().lower()) if Body else ""
         media_url = form.get("MediaUrl0")
         media_content_type = form.get("MediaContentType", "")
-        print(f"📖 WhatsApp from {From}: {decrypt_message(user_input)[:20] if user_input else '[Empty]'}, Media: {media_url}")
+        print(f"📖 WhatsApp from {From}: {'[Empty]' if not user_input else '[Message]'}, Media: {media_url}")
 
         feedback_data = await detect_feedback(decrypt_message(user_input) if user_input else "")
         feedback_processed = False
@@ -472,7 +471,7 @@ async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks, F
         if media_url and "audio" in media_content_type.lower():
             transcribed_text = await transcribe_audio(media_url)
             user_input = encrypt_message(transcribed_text.strip().lower() or "[Audio message]")
-            print(f"🎙️ Transcription: {decrypt_message(user_input)[:20]}")
+            print(f"🎙️ Transcription received")
             feedback_data = await detect_feedback(decrypt_message(user_input))
             if feedback_data.get("is_feedback"):
                 fact_id = feedback_data.get("fact_id")
@@ -607,7 +606,7 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
         form = await request.form()
         user_input = encrypt_message(form.get("SpeechResult", "").strip())
         phone = form.get("From", "unknown")
-        print(f"📞 Voice input: {decrypt_message(user_input)[:20]} from {phone}")
+        print(f"📞 Voice input from {phone}")
 
         if not user_input:
             twiml = '''<?xml version="1.0" encoding="UTF-8"?>
@@ -622,7 +621,7 @@ async def process_speech(request: Request, background_tasks: BackgroundTasks):
         reply_text = saxutils.escape(decrypt_message(result[0]["content"]))
 
         conversation_history[phone].append({"role": "assistant", "content": result[0]["content"], "timestamp": time.time()})
-        print(f"📞 Voice reply: {reply_text[:20]}")
+        print(f"📞 Voice reply sent")
 
         twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
