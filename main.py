@@ -154,20 +154,22 @@ async def detect_implicit_liking(session_id: str, conversation_history: List[Dic
         if len([m for m in conversation_history if m["role"] == "user"]) < 2:
             return {"is_liked": False, "fact_id": None, "confidence": 0.0, "topic": None, "suggested_question": None}
         user_messages = [decrypt_message(m["content"]) if m["role"] == "user" else m["content"] for m in conversation_history][-5:]
+        print(f"🧠 User messages count: {len(user_messages)}")
         openai_body = {
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "Analyze conversation for implicit liking (e.g., deeper questions, positive sentiment). "
-                        "Generate fact_id and suggest a follow-up question. "
-                        "Return JSON: { \"is_liked\": bool, \"fact_id\": str|null, \"confidence\": float, \"topic\": str|null, \"suggested_question\": str|null }."
+                        "You are a JSON-only assistant. Analyze the conversation for implicit liking (e.g., deeper questions, positive sentiment). "
+                        "Return a JSON object with fields: is_liked (bool), fact_id (str or null), confidence (float), topic (str or null), suggested_question (str or null). "
+                        "Do not return any text outside the JSON object. Example: "
+                        "{\"is_liked\": true, \"fact_id\": \"fact_emf_sustainability\", \"confidence\": 0.8, \"topic\": \"EMF\", \"suggested_question\": \"Want to learn about EMF safety?\"}"
                     )
                 },
                 {"role": "user", "content": "\n".join(user_messages)}
             ],
             "temperature": 0.3,
-            "max_tokens": 150,
+            "max_tokens": 100,
             "stream": False
         }
         headers = {"Content-Type": "application/json", "api-key": AZURE_OPENAI_KEY}
